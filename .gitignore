@@ -1,0 +1,41 @@
+# --- Build plan (kept local, not part of the public project) ---
+fleet_reliability_build_plan.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+*.sqlite
+*.db
+
+# --- C / firmware build artifacts ---
+*.o
+*.elf
+*.bin
+*.map
+*.list
+Debug/
+Release/
+build/
+
+# --- STM32CubeIDE workspace cruft ---
+.metadata/
+*.launch
+
+# --- Node / tooling (if any dashboards-as-code show up later) ---
+node_modules/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Secrets / local config ---
+.env
+*.local
+secrets/
