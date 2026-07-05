@@ -102,6 +102,8 @@ either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
 - Why non-blocking matters: a blocking delay would stall sensor reads and desync sampling from real
   time.
 
+  SysTick is just a timer since the program started. We use that instead of sleep so the MCU can still perform actions like printing, and other UART actions.
+
 ## Chunk 8 — JSON-line telemetry over UART
 
 **One-liner tier:**
@@ -109,12 +111,17 @@ either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
 - UART vs I²C: UART is asynchronous and point-to-point with no shared clock line; I²C is a
   synchronous multi-device bus.
 
+  I2C: A clock and data signal, slaves return data when the master writes to that address on a high clk signal
+  UART: No clk signal, one way, and asynchronous, just Rx->Tx from both master and slave.
+
 **Interview-critical tier:**
 
 - Why newline-delimited JSON, and why this is hop-one of the troubleshooting chain: if telemetry
   stops, the newline-delimited framing is the first thing that tells me whether the fault is the
   sensor, the I²C read, or UART framing itself — a corrupted/missing delimiter points at UART, a
   bad value points upstream at the read or the sensor.
+
+  NDJSON is just like normal JSON but each JSON object is seperated by a new line. This makes it easy to tell where one message starts and the other ends, making debugging easier, as well as finding which points of the system have problems based on values/messages.
 
 ## Chunk 9 — Heartbeat + sequence numbers
 
