@@ -82,6 +82,8 @@ either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
 - Why configure before reading: the sensor's scale/mode registers have to be set before raw
   readings mean anything.
 
+  The sensor is set to SLEEP mode by default, and the raw values are in terms of g (9.81), so the sensor must be turned on and scaled, as do all sensors after purchase.
+
 ## Chunk 6 — BME280 on the same bus
 
 **One-liner tier:**
