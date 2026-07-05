@@ -29,9 +29,19 @@ are exactly the gaps an interviewer will find.
 
 _TCP vs UDP for SSH (why TCP, port 22); what systemd is; systemctl/journalctl; what DNS resolves._
 
+1 - TCP vs UDP:
+TCP ensures all packets are sent in order, and resends if missing. This is slower but necessary for ssh commands, compared to UDP which is faster but doesn't guarantee packet integrity
+
+2 - What systemd is:
+systemd is the startup control in the OS of the Raspberry Pi. It controls all the services that run, including SSH. If bugs are encountered, then the logs for systemd will greatly benefit debugging (systemctl - logs for SSH status/journalctl - actual SSH instructions ran)
+
+3 - The DNS resolves the issue of remembering the IP of something. For example fleet-gw is easy to remember but 192.193.13.27 is hard. The DNS solves that by tracking and translating IPs to links. The mDNS is the local network version of that, where a device would respond when scanned for a certain name.
+
 ## Chunk 3 — Nucleo toolchain
 
 _What ST-LINK is; bare-metal vs running an OS; how flashing writes to MCU flash._
+
+1 - What is ST-LINK
 
 ## Chunk 4 — I²C bring-up
 
