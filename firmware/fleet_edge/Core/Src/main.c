@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "bme280.h"   /* vendored BME280 driver: NVM calib + Bosch compensation */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -76,6 +76,14 @@ UART_HandleTypeDef huart2;
 volatile int16_t ax, ay, az, gx, gy, gz;      /* raw signed 16-bit counts */
 volatile float   ax_g, ay_g, az_g;            /* acceleration, g */
 volatile float   gx_dps, gy_dps, gz_dps;      /* angular rate, deg/s */
+
+/* Latest BME280 environmental sample, in engineering units. File-scope for the
+   same Live Expressions reason as the IMU globals above. The driver's per-chip
+   calibration lives in bme280 (filled once at init), not here. */
+BME280_t bme280;
+volatile float temp_c;      /* degrees Celsius */
+volatile float pressure_hpa;/* hectopascals (== mbar) */
+volatile float humidity_pct;/* %RH */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -171,6 +179,16 @@ int main(void)
   {
     Error_Handler();
   }
+
+  /* Initialize the BME280 once: the driver reads the chip's factory NVM
+     calibration and configures oversampling x1 + normal (continuous) mode.
+     Unlike the MPU, we can't just scale raw counts - every BME is individually
+     trimmed, so this calibration read is mandatory before any reading is valid.
+     Fail closed like the ID checks. */
+  if (BME280_Init(&bme280, &hi2c1, BME280_I2C_ADDR) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -211,6 +229,17 @@ int main(void)
     }
     /* A dropped sample leaves the previous values in place for now; proper
        error handling / degraded state lands in a later chunk. */
+
+    /* Sample the BME280: the driver burst-reads the raw registers and runs the
+       per-chip compensation, handing back real units. Read into locals, then
+       publish to the volatile globals the telemetry chunk will consume. */
+    float t, p, h;
+    if (BME280_Read(&bme280, &t, &p, &h) == HAL_OK)
+    {
+      temp_c       = t;
+      pressure_hpa = p;
+      humidity_pct = h;
+    }
   }
   /* USER CODE END 3 */
 }
