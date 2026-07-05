@@ -37,37 +37,75 @@ systemd is the startup control in the OS of the Raspberry Pi. It controls all th
 
 3 - The DNS resolves the issue of remembering the IP of something. For example fleet-gw is easy to remember but 192.193.13.27 is hard. The DNS solves that by tracking and translating IPs to links. The mDNS is the local network version of that, where a device would respond when scanned for a certain name.
 
+## Firmware defends — tiering note
+
+_Reweighted 2026-07-04: Tesla SRE interviews probe systems/reliability reasoning, not firmware
+trivia. Chunks 3-9 below are tiered so I know exactly how much to internalize — Interview-critical
+gets full depth, One-liner gets a single sentence, and low-signal register/math/formula detail is
+either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
+
+**Tier 1 — Interview-critical, full depth, wherever it lives:**
+
+1. Gateway pattern — Chunk 1 above (constrained MCU with no networking behind a connectivity
+   gateway = ECU behind a telematics unit).
+2. Heartbeat + sequence numbers — Chunk 9 below (seq# → packet-loss detection; heartbeat →
+   telemetry-freshness SLI).
+3. Firmware as hop-one of the telemetry troubleshooting chain — Chunk 8 below (is it the sensor,
+   the I²C read, or the UART framing that broke?).
+
 ## Chunk 3 — Nucleo toolchain
 
-_What ST-LINK is; bare-metal vs running an OS; how flashing writes to MCU flash._
+**One-liner tier:**
 
-1 - What is ST-LINK
-
-ST-LINK is a seperate microcontroller on the STM32 that allows for the STM32CubeIDE to reach the F401RE chip. It has it's own translator and communicates thru Serial Wire Debug (SWD). This is how you can debug and run code on the chip itself.
-
-2 - Bare metal is no OS layer underneath your code, your code owns the entire chip. OS means the OS runs processes, scheduling, manages memory etc.
-
-3 - Flashing goes thru the ST-LINK, unlocks the flash controller, erases the flash memory it needs to erase, and pastes in the binary of your code.
+- What ST-LINK is: a separate on-board debug chip that talks SWD to the F401RE so STM32CubeIDE can
+  flash and debug it.
+- Bare-metal vs OS: bare-metal means my code owns the whole chip with nothing underneath it; an OS
+  would add process scheduling and memory management in between.
+- Flashing: goes through the ST-LINK, which unlocks the flash controller, erases what it needs to,
+  and writes the binary in.
 
 ## Chunk 4 — I²C bring-up
 
-_What I²C is (SDA/SCL, master/slave, 7-bit addressing); why pull-ups (open-drain); why MPU @ 0x68._
+**One-liner tier:**
+
+- What I²C is: a two-wire (SDA/SCL) master/slave bus using 7-bit addressing.
 
 ## Chunk 5 — Read the IMU
 
-_Two's-complement 16-bit registers; sensitivity scale → physical units; why configure before reading._
+**One-liner tier:**
+
+- Why configure before reading: the sensor's scale/mode registers have to be set before raw
+  readings mean anything.
 
 ## Chunk 6 — BME280 on the same bus
 
-_Two devices on one I²C bus (different addresses); why raw BME readings need compensation._
+**One-liner tier:**
+
+- Two devices, one I²C bus: they coexist fine since each has its own 7-bit address, no extra wiring
+  needed.
 
 ## Chunk 7 — Non-blocking sampling
 
-_SysTick; why non-blocking timing matters; RTOS background (context switching, stacks, MSP/PSP)._
+**One-liner tier:**
+
+- SysTick: a hardware timer interrupt used to drive periodic sampling without blocking the main
+  loop.
+- Why non-blocking matters: a blocking delay would stall sensor reads and desync sampling from real
+  time.
 
 ## Chunk 8 — JSON-line telemetry over UART
 
-_UART vs I²C (async, no clock line, point-to-point); baud rate; why newline-delimited JSON._
+**One-liner tier:**
+
+- UART vs I²C: UART is asynchronous and point-to-point with no shared clock line; I²C is a
+  synchronous multi-device bus.
+
+**Interview-critical tier:**
+
+- Why newline-delimited JSON, and why this is hop-one of the troubleshooting chain: if telemetry
+  stops, the newline-delimited framing is the first thing that tells me whether the fault is the
+  sensor, the I²C read, or UART framing itself — a corrupted/missing delimiter points at UART, a
+  bad value points upstream at the read or the sensor.
 
 ## Chunk 9 — Heartbeat + sequence numbers
 
