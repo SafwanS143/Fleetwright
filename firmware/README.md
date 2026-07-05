@@ -9,15 +9,25 @@ parses inbound config commands and acks them back up the telemetry path.
 
 **Toolchain:** STM32CubeIDE (or PlatformIO), flashed over the on-board ST-LINK.
 
-One newline-delimited JSON object per sample, streamed at 10 Hz over USART2 (the
-ST-LINK virtual COM port, 115200 8N1). Values are in engineering units:
+Newline-delimited JSON over USART2 (the ST-LINK virtual COM port, 115200 8N1).
+Two message types share one stream, distinguished by `type`:
+
+**Telemetry** — one line per sample at 10 Hz, values in engineering units:
 
 ```
-{"id":"fleet-edge-01","seq":42,"ts":4200,"temp":26.70,"humidity":54.63,
- "pressure":971.14,"ax":0.026,"ay":0.009,"az":1.001,"gx":0.73,"gy":-0.90,"gz":0.06}
+{"id":"fleet-edge-01","type":"telemetry","seq":42,"ts":4200,"temp":26.70,
+ "humidity":54.63,"pressure":971.14,"ax":0.026,"ay":0.009,"az":1.001,
+ "gx":0.73,"gy":-0.90,"gz":0.06}
 ```
 
-- `seq` — monotonic message counter (lets the gateway detect gaps/packet loss)
+**Heartbeat** — a payload-free "I'm alive" line every 5 s (liveness independent
+of sensor data; basis of the telemetry-freshness SLI):
+
+```
+{"id":"fleet-edge-01","type":"heartbeat","seq":47,"ts":9200}
+```
+
+- `seq` — monotonic counter shared across **both** types (any gap = a lost line)
 - `ts` — device uptime in ms (`HAL_GetTick`)
 - `temp` °C, `humidity` %RH, `pressure` hPa, `ax..az` g, `gx..gz` °/s
 

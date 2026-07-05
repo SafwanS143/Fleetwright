@@ -77,6 +77,7 @@
 /* --- Sampling + telemetry (Chunks 7-8) -------------------------------------*/
 #define SAMPLE_PERIOD_MS       100U   /* fixed 10 Hz sampling cadence */
 #define HEARTBEAT_LED_MS       500U   /* LD2 blink half-period, independent of sampling */
+#define HEARTBEAT_MSG_MS       5000U  /* "I'm alive" telemetry line interval (liveness) */
 #define TELEMETRY_UART_TIMEOUT 100U   /* ms to push one JSON line over UART */
 #define TELEMETRY_LINE_MAX     200U   /* max bytes in one JSON telemetry line */
 #define DEVICE_ID              "fleet-edge-01"   /* this node's stable fleet identity */
@@ -203,7 +204,7 @@ static void Telemetry_Emit(void)
   fmt_fixed(sgz, sizeof sgz, gz_dps, 2);
 
   int len = snprintf(line, sizeof line,
-      "{\"id\":\"%s\",\"seq\":%lu,\"ts\":%lu,"
+      "{\"id\":\"%s\",\"type\":\"telemetry\",\"seq\":%lu,\"ts\":%lu,"
       "\"temp\":%s,\"humidity\":%s,\"pressure\":%s,"
       "\"ax\":%s,\"ay\":%s,\"az\":%s,"
       "\"gx\":%s,\"gy\":%s,\"gz\":%s}\r\n",
@@ -214,6 +215,24 @@ static void Telemetry_Emit(void)
   {
     HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)len, TELEMETRY_UART_TIMEOUT);
     seq++;   /* advance only after a line is framed (monotonic per message) */
+  }
+}
+
+/* Emit a heartbeat line: a payload-free "I'm alive" message on its own fixed
+   cadence. It shares the monotonic seq with telemetry (so any gap in the merged
+   stream = a lost line) and carries the uptime (ts). Its job is liveness that is
+   independent of sensor data - if telemetry stalls but heartbeats keep coming,
+   the device and link are fine and the fault is upstream in the sensor path. */
+static void Heartbeat_Emit(void)
+{
+  char line[TELEMETRY_LINE_MAX];
+  int len = snprintf(line, sizeof line,
+      "{\"id\":\"%s\",\"type\":\"heartbeat\",\"seq\":%lu,\"ts\":%lu}\r\n",
+      DEVICE_ID, (unsigned long)seq, (unsigned long)HAL_GetTick());
+  if (len > 0)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)len, TELEMETRY_UART_TIMEOUT);
+    seq++;
   }
 }
 /* USER CODE END 0 */
@@ -238,6 +257,7 @@ int main(void)
   HAL_StatusTypeDef imu_status;      /* result of each sampling read */
   uint32_t last_sample = 0;          /* SysTick ms of the last sample tick */
   uint32_t last_led = 0;             /* SysTick ms of the last LED toggle */
+  uint32_t last_hb = 0;              /* SysTick ms of the last heartbeat line */
   /* ax..gz and the g/dps outputs are file-scope globals (see PV) so Live
      Expressions can watch them while the target runs. */
   /* USER CODE END 1 */
@@ -395,6 +415,14 @@ int main(void)
     {
       last_led += HEARTBEAT_LED_MS;
       HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+    }
+
+    /* Heartbeat line - its own cadence, independent of sampling, so it keeps
+       proving liveness even if a sensor read stalls the telemetry path. */
+    if ((uint32_t)(now - last_hb) >= HEARTBEAT_MSG_MS)
+    {
+      last_hb += HEARTBEAT_MSG_MS;
+      Heartbeat_Emit();
     }
 
     /* Fixed-rate sampling at SAMPLE_PERIOD_MS (10 Hz). Advancing last_sample by
