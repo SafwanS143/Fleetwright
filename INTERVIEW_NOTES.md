@@ -43,6 +43,12 @@ _What ST-LINK is; bare-metal vs running an OS; how flashing writes to MCU flash.
 
 1 - What is ST-LINK
 
+ST-LINK is a seperate microcontroller on the STM32 that allows for the STM32CubeIDE to reach the F401RE chip. It has it's own translator and communicates thru Serial Wire Debug (SWD). This is how you can debug and run code on the chip itself.
+
+2 - Bare metal is no OS layer underneath your code, your code owns the entire chip. OS means the OS runs processes, scheduling, manages memory etc.
+
+3 - Flashing goes thru the ST-LINK, unlocks the flash controller, erases the flash memory it needs to erase, and pastes in the binary of your code.
+
 ## Chunk 4 — I²C bring-up
 
 _What I²C is (SDA/SCL, master/slave, 7-bit addressing); why pull-ups (open-drain); why MPU @ 0x68._
