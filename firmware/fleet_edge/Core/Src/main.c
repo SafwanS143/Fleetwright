@@ -73,6 +73,13 @@
 #define BME280_REG_ID       0xD0U
 #define BME280_CHIP_ID      0x60U        /* BME280 (a BMP280 reads 0x58) */
 #define BME280_I2C_TIMEOUT  100U         /* ms */
+
+/* --- Sampling + telemetry (Chunks 7-8) -------------------------------------*/
+#define SAMPLE_PERIOD_MS       100U   /* fixed 10 Hz sampling cadence */
+#define HEARTBEAT_LED_MS       500U   /* LD2 blink half-period, independent of sampling */
+#define TELEMETRY_UART_TIMEOUT 100U   /* ms to push one JSON line over UART */
+#define TELEMETRY_LINE_MAX     200U   /* max bytes in one JSON telemetry line */
+#define DEVICE_ID              "fleet-edge-01"   /* this node's stable fleet identity */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -94,6 +101,7 @@ volatile int16_t ax, ay, az, gx, gy, gz;      /* raw signed 16-bit counts */
 volatile float   ax_g, ay_g, az_g;            /* acceleration, g */
 volatile float   gx_dps, gy_dps, gz_dps;      /* angular rate, deg/s */
 volatile int16_t gx_off, gy_off, gz_off;      /* gyro zero-rate bias, raw counts */
+volatile uint32_t seq;                        /* monotonic telemetry sequence number */
 
 /* Latest BME280 environmental sample, in engineering units. File-scope for the
    same Live Expressions reason as the IMU globals above. The driver's per-chip
@@ -115,7 +123,99 @@ static void MX_I2C1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#include <stdio.h>   /* snprintf */
 
+/* Recover a wedged I2C bus. After a WARM reset (debugger restart / reset button)
+   the STM32 restarts but the sensors do not; one left mid-transfer can keep
+   holding SDA low, jamming the bus so every HAL read times out (this is the
+   startup hang we hit). The standard fix: drive SCL manually as a GPIO and clock
+   out up to 9 pulses until the slave releases SDA, issue a STOP, then re-init the
+   peripheral. PB8 = SCL, PB9 = SDA (see HAL_I2C_MspInit). */
+static void I2C1_BusRecover(void)
+{
+  GPIO_InitTypeDef gpio = {0};
+
+  HAL_I2C_DeInit(&hi2c1);            /* hand PB8/PB9 back from the I2C peripheral */
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  gpio.Mode  = GPIO_MODE_OUTPUT_OD;  /* open-drain, like a real I2C line */
+  gpio.Pull  = GPIO_NOPULL;          /* the sensor modules carry the pull-ups */
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  gpio.Pin   = GPIO_PIN_8 | GPIO_PIN_9;
+  HAL_GPIO_Init(GPIOB, &gpio);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_SET); /* idle high */
+
+  /* Pulse SCL until SDA is released (max 9 = one byte + ack). */
+  for (int i = 0; i < 9 && HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET; i++)
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_Delay(1);
+  }
+
+  /* Generate a STOP: SDA rises while SCL is high. */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET);
+  HAL_Delay(1);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+  HAL_Delay(1);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);
+  HAL_Delay(1);
+
+  MX_I2C1_Init();                    /* re-init peripheral; restores PB8/PB9 to AF */
+}
+
+/* Format a float as a fixed-decimal string WITHOUT floating-point printf.
+   newlib-nano omits %f by default (and pulling it in bloats a constrained MCU),
+   so we split the value into an integer part and a zero-padded fractional part
+   and print those with plain %ld. Returns bytes written (snprintf semantics). */
+static int fmt_fixed(char *buf, size_t n, float v, int decimals)
+{
+  int neg = (v < 0.0f);
+  if (neg) { v = -v; }
+  int32_t mul = 1;
+  for (int i = 0; i < decimals; i++) { mul *= 10; }
+  int32_t scaled = (int32_t)(v * (float)mul + 0.5f);   /* round to N decimals */
+  int32_t whole  = scaled / mul;
+  int32_t frac   = scaled % mul;
+  return snprintf(buf, n, "%s%ld.%0*ld", neg ? "-" : "", (long)whole, decimals, (long)frac);
+}
+
+/* Frame the latest sample as ONE newline-delimited JSON object and push it over
+   UART. Newline-delimited JSON (NDJSON) = one complete JSON value per line, '\n'
+   as the record separator - so the gateway can split the stream on newlines and
+   know each line is a whole message. */
+static void Telemetry_Emit(void)
+{
+  char line[TELEMETRY_LINE_MAX];
+  char st[12], sh[12], sp[12];                 /* temp, humidity, pressure */
+  char sax[12], say[12], saz[12];              /* accel, g */
+  char sgx[12], sgy[12], sgz[12];              /* gyro, dps */
+
+  fmt_fixed(st,  sizeof st,  temp_c,       2);
+  fmt_fixed(sh,  sizeof sh,  humidity_pct, 2);
+  fmt_fixed(sp,  sizeof sp,  pressure_hpa, 2);
+  fmt_fixed(sax, sizeof sax, ax_g, 3);
+  fmt_fixed(say, sizeof say, ay_g, 3);
+  fmt_fixed(saz, sizeof saz, az_g, 3);
+  fmt_fixed(sgx, sizeof sgx, gx_dps, 2);
+  fmt_fixed(sgy, sizeof sgy, gy_dps, 2);
+  fmt_fixed(sgz, sizeof sgz, gz_dps, 2);
+
+  int len = snprintf(line, sizeof line,
+      "{\"id\":\"%s\",\"seq\":%lu,\"ts\":%lu,"
+      "\"temp\":%s,\"humidity\":%s,\"pressure\":%s,"
+      "\"ax\":%s,\"ay\":%s,\"az\":%s,"
+      "\"gx\":%s,\"gy\":%s,\"gz\":%s}\r\n",
+      DEVICE_ID, (unsigned long)seq, (unsigned long)HAL_GetTick(),
+      st, sh, sp, sax, say, saz, sgx, sgy, sgz);
+
+  if (len > 0)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)len, TELEMETRY_UART_TIMEOUT);
+    seq++;   /* advance only after a line is framed (monotonic per message) */
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -133,8 +233,11 @@ int main(void)
   uint8_t mpu_wake = 0x00;           /* value written to PWR_MGMT_1 to clear SLEEP */
   uint8_t mpu_dlpf;                  /* DLPF config byte written to CONFIG/ACCEL_CONFIG2 */
   int32_t gx_sum = 0, gy_sum = 0, gz_sum = 0; /* gyro-bias calibration accumulators */
+  uint16_t gx_n = 0, gy_n = 0, gz_n = 0;      /* count of accepted (non-railed) samples */
   uint8_t imu_raw[MPU6500_BURST_LEN];/* one atomic burst: accel, temp, gyro */
   HAL_StatusTypeDef imu_status;      /* result of each sampling read */
+  uint32_t last_sample = 0;          /* SysTick ms of the last sample tick */
+  uint32_t last_led = 0;             /* SysTick ms of the last LED toggle */
   /* ax..gz and the g/dps outputs are file-scope globals (see PV) so Live
      Expressions can watch them while the target runs. */
   /* USER CODE END 1 */
@@ -160,6 +263,9 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  /* Clear any bus lockup left by a warm reset before the first transaction. */
+  I2C1_BusRecover();
+
   /* Read the MPU-6500 WHO_AM_I register as an I2C sanity check (expect 0x70). */
   whoami_status = HAL_I2C_Mem_Read(&hi2c1,
                                    MPU6500_I2C_ADDR,
@@ -239,23 +345,25 @@ int main(void)
                          I2C_MEMADD_SIZE_8BIT, imu_raw, MPU6500_BURST_LEN,
                          MPU6500_I2C_TIMEOUT) == HAL_OK)
     {
-      gx_sum += (int16_t)((imu_raw[8]  << 8) | imu_raw[9]);
-      gy_sum += (int16_t)((imu_raw[10] << 8) | imu_raw[11]);
-      gz_sum += (int16_t)((imu_raw[12] << 8) | imu_raw[13]);
+      int16_t rgx = (int16_t)((imu_raw[8]  << 8) | imu_raw[9]);
+      int16_t rgy = (int16_t)((imu_raw[10] << 8) | imu_raw[11]);
+      int16_t rgz = (int16_t)((imu_raw[12] << 8) | imu_raw[13]);
+      /* Reject railed/outlier samples per axis BEFORE averaging: a real at-rest
+         reading is well under the bias bound, so anything past it is a start-up
+         transient or a bump, not bias. This is what let gy railing poison the
+         old whole-window average and get the axis zeroed - now we just drop
+         those samples and keep gy's true ~1 dps offset. */
+      if (rgx < MPU6500_GYRO_BIAS_MAX_CNT && rgx > -MPU6500_GYRO_BIAS_MAX_CNT) { gx_sum += rgx; gx_n++; }
+      if (rgy < MPU6500_GYRO_BIAS_MAX_CNT && rgy > -MPU6500_GYRO_BIAS_MAX_CNT) { gy_sum += rgy; gy_n++; }
+      if (rgz < MPU6500_GYRO_BIAS_MAX_CNT && rgz > -MPU6500_GYRO_BIAS_MAX_CNT) { gz_sum += rgz; gz_n++; }
     }
     HAL_Delay(2);
   }
-  gx_off = (int16_t)(gx_sum / MPU6500_GYRO_CAL_SAMPLES);
-  gy_off = (int16_t)(gy_sum / MPU6500_GYRO_CAL_SAMPLES);
-  gz_off = (int16_t)(gz_sum / MPU6500_GYRO_CAL_SAMPLES);
-
-  /* Reject a contaminated offset per axis: a plausible bias is only a few dps,
-     so a huge value means we averaged in motion or a start-up transient (this is
-     exactly what railed gy). Fall back to no correction for that axis - a bad
-     calibration is worse than none. */
-  if (gx_off > MPU6500_GYRO_BIAS_MAX_CNT || gx_off < -MPU6500_GYRO_BIAS_MAX_CNT) { gx_off = 0; }
-  if (gy_off > MPU6500_GYRO_BIAS_MAX_CNT || gy_off < -MPU6500_GYRO_BIAS_MAX_CNT) { gy_off = 0; }
-  if (gz_off > MPU6500_GYRO_BIAS_MAX_CNT || gz_off < -MPU6500_GYRO_BIAS_MAX_CNT) { gz_off = 0; }
+  /* Average only the accepted samples. If an axis had none (railed the whole
+     window), fall back to no correction - a bad calibration is worse than none. */
+  gx_off = gx_n ? (int16_t)(gx_sum / gx_n) : 0;
+  gy_off = gy_n ? (int16_t)(gy_sum / gy_n) : 0;
+  gz_off = gz_n ? (int16_t)(gz_sum / gz_n) : 0;
 
   /* Initialize the BME280 once: the driver reads the chip's factory NVM
      calibration and configures oversampling x1 + normal (continuous) mode.
@@ -272,51 +380,72 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    HAL_Delay(500);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    /* Sample the IMU: one 14-byte burst from ACCEL_XOUT_H (the MPU auto-
-       increments its register pointer), then split each high/low pair into a
-       signed count and scale to engineering units. */
-    imu_status = HAL_I2C_Mem_Read(&hi2c1,
-                                  MPU6500_I2C_ADDR,
-                                  MPU6500_REG_ACCEL_XOUT_H,
-                                  I2C_MEMADD_SIZE_8BIT,
-                                  imu_raw,
-                                  MPU6500_BURST_LEN,
-                                  MPU6500_I2C_TIMEOUT);
-    if (imu_status == HAL_OK)
-    {
-      ax = (int16_t)((imu_raw[0]  << 8) | imu_raw[1]);
-      ay = (int16_t)((imu_raw[2]  << 8) | imu_raw[3]);
-      az = (int16_t)((imu_raw[4]  << 8) | imu_raw[5]);
-      /* imu_raw[6..7] = on-die temperature, unused (telemetry temp is BME280's).
-         Subtract the boot-time zero-rate bias so a still board reads ~0 dps. */
-      gx = (int16_t)(((int16_t)((imu_raw[8]  << 8) | imu_raw[9]))  - gx_off);
-      gy = (int16_t)(((int16_t)((imu_raw[10] << 8) | imu_raw[11])) - gy_off);
-      gz = (int16_t)(((int16_t)((imu_raw[12] << 8) | imu_raw[13])) - gz_off);
+    /* Non-blocking scheduler: instead of a HAL_Delay spin (which parks the CPU
+       and makes timing drift with how long the body takes), we poll the SysTick
+       millisecond counter (HAL_GetTick) and fire each task when its period is
+       due. The (uint32_t) subtraction is wrap-around safe. */
+    uint32_t now = HAL_GetTick();
 
-      ax_g = ax / MPU6500_ACCEL_SENS;
-      ay_g = ay / MPU6500_ACCEL_SENS;
-      az_g = az / MPU6500_ACCEL_SENS;
-      gx_dps = gx / MPU6500_GYRO_SENS;
-      gy_dps = gy / MPU6500_GYRO_SENS;
-      gz_dps = gz / MPU6500_GYRO_SENS;
+    /* Heartbeat LED - a separate cadence so a stalled sensor read never freezes
+       the "I'm alive" signal. */
+    if ((uint32_t)(now - last_led) >= HEARTBEAT_LED_MS)
+    {
+      last_led += HEARTBEAT_LED_MS;
+      HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
     }
-    /* A dropped sample leaves the previous values in place for now; proper
-       error handling / degraded state lands in a later chunk. */
 
-    /* Sample the BME280: the driver burst-reads the raw registers and runs the
-       per-chip compensation, handing back real units. Read into locals, then
-       publish to the volatile globals the telemetry chunk will consume. */
-    float t, p, h;
-    if (BME280_Read(&bme280, &t, &p, &h) == HAL_OK)
+    /* Fixed-rate sampling at SAMPLE_PERIOD_MS (10 Hz). Advancing last_sample by
+       exactly one period (not "= now") keeps the average rate locked to the
+       tick, so it doesn't drift with body execution time. */
+    if ((uint32_t)(now - last_sample) >= SAMPLE_PERIOD_MS)
     {
-      temp_c       = t;
-      pressure_hpa = p;
-      humidity_pct = h;
+      last_sample += SAMPLE_PERIOD_MS;
+
+      /* Sample the IMU: one 14-byte burst from ACCEL_XOUT_H (the MPU auto-
+         increments its register pointer), split each high/low pair into a
+         signed count, subtract the gyro bias, and scale to engineering units. */
+      imu_status = HAL_I2C_Mem_Read(&hi2c1,
+                                    MPU6500_I2C_ADDR,
+                                    MPU6500_REG_ACCEL_XOUT_H,
+                                    I2C_MEMADD_SIZE_8BIT,
+                                    imu_raw,
+                                    MPU6500_BURST_LEN,
+                                    MPU6500_I2C_TIMEOUT);
+      if (imu_status == HAL_OK)
+      {
+        ax = (int16_t)((imu_raw[0]  << 8) | imu_raw[1]);
+        ay = (int16_t)((imu_raw[2]  << 8) | imu_raw[3]);
+        az = (int16_t)((imu_raw[4]  << 8) | imu_raw[5]);
+        /* imu_raw[6..7] = on-die temperature, unused (telemetry temp is BME280's). */
+        gx = (int16_t)(((int16_t)((imu_raw[8]  << 8) | imu_raw[9]))  - gx_off);
+        gy = (int16_t)(((int16_t)((imu_raw[10] << 8) | imu_raw[11])) - gy_off);
+        gz = (int16_t)(((int16_t)((imu_raw[12] << 8) | imu_raw[13])) - gz_off);
+
+        ax_g = ax / MPU6500_ACCEL_SENS;
+        ay_g = ay / MPU6500_ACCEL_SENS;
+        az_g = az / MPU6500_ACCEL_SENS;
+        gx_dps = gx / MPU6500_GYRO_SENS;
+        gy_dps = gy / MPU6500_GYRO_SENS;
+        gz_dps = gz / MPU6500_GYRO_SENS;
+      }
+      /* A dropped sample leaves the previous values in place for now; proper
+         error handling / degraded state lands in a later chunk. */
+
+      /* Sample the BME280: the driver burst-reads the raw registers and runs the
+         per-chip compensation, handing back real units. */
+      float t, p, h;
+      if (BME280_Read(&bme280, &t, &p, &h) == HAL_OK)
+      {
+        temp_c       = t;
+        pressure_hpa = p;
+        humidity_pct = h;
+      }
+
+      /* Frame this sample as one NDJSON line and stream it over UART. */
+      Telemetry_Emit();
     }
   }
   /* USER CODE END 3 */

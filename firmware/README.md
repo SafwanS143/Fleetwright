@@ -9,9 +9,17 @@ parses inbound config commands and acks them back up the telemetry path.
 
 **Toolchain:** STM32CubeIDE (or PlatformIO), flashed over the on-board ST-LINK.
 
+One newline-delimited JSON object per sample, streamed at 10 Hz over USART2 (the
+ST-LINK virtual COM port, 115200 8N1). Values are in engineering units:
+
 ```
-{ "id": "...", "seq": 0, "ts": 0, "temp": 0.0, "humidity": 0.0,
-  "pressure": 0.0, "ax": 0, "ay": 0, "az": 0, "gx": 0, "gy": 0, "gz": 0 }
+{"id":"fleet-edge-01","seq":42,"ts":4200,"temp":26.70,"humidity":54.63,
+ "pressure":971.14,"ax":0.026,"ay":0.009,"az":1.001,"gx":0.73,"gy":-0.90,"gz":0.06}
 ```
 
-> Scaffold only — drivers and sampling loop land in Phase 1 (Chunks 4–9).
+- `seq` — monotonic message counter (lets the gateway detect gaps/packet loss)
+- `ts` — device uptime in ms (`HAL_GetTick`)
+- `temp` °C, `humidity` %RH, `pressure` hPa, `ax..az` g, `gx..gz` °/s
+
+> Floats are formatted without newlib-nano's `%f` (avoids pulling float `printf`
+> into the image); see `fmt_fixed()` in `Core/Src/main.c`.
