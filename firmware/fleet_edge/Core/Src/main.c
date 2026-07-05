@@ -48,6 +48,23 @@
 #define MPU6500_BURST_LEN        14U     /* accel(6) + temp(2) + gyro(6) */
 #define MPU6500_ACCEL_SENS       16384.0f/* LSB per g,   default +/-2 g   range */
 #define MPU6500_GYRO_SENS        131.0f  /* LSB per dps, default +/-250 dps range */
+/* On-chip Digital Low-Pass Filter config. Left at reset defaults the gyro runs
+   at ~250 Hz bandwidth and passes all its broadband noise straight through; at
+   our 10 Hz telemetry rate we want none of that. Writing CONFIG selects a
+   ~41 Hz gyro cutoff and ACCEL_CONFIG2 a ~44 Hz accel cutoff. (DLPF is enabled
+   only while FCHOICE_B = 0, which is the reset state of GYRO_CONFIG, so we don't
+   touch that register.) */
+#define MPU6500_REG_CONFIG        0x1AU  /* gyro/temp DLPF_CFG in bits [2:0] */
+#define MPU6500_REG_ACCEL_CONFIG2 0x1DU  /* accel A_DLPF_CFG in bits [2:0] */
+#define MPU6500_DLPF_CFG_41HZ     0x03U  /* gyro  DLPF ~41 Hz */
+#define MPU6500_ADLPF_CFG_44HZ    0x03U  /* accel DLPF ~44 Hz */
+/* Gyro zero-rate calibration: samples averaged at boot while the board is still. */
+#define MPU6500_GYRO_CAL_SAMPLES  200U
+/* Sanity bound on the computed bias: a real zero-rate offset is only a few dps,
+   so anything past ~20 dps of raw counts means the average was contaminated
+   (motion, or a start-up transient railing an axis). Reject it and leave that
+   axis uncorrected rather than baking in garbage. 20 dps * 131 LSB/dps ~= 2620. */
+#define MPU6500_GYRO_BIAS_MAX_CNT 2620
 
 /* BME280 chip-ID sanity check: genuine BME280 reports 0x60 in its id register.
    A BMP280 reports 0x58 and has NO humidity sensor, so it would silently break
@@ -76,6 +93,7 @@ UART_HandleTypeDef huart2;
 volatile int16_t ax, ay, az, gx, gy, gz;      /* raw signed 16-bit counts */
 volatile float   ax_g, ay_g, az_g;            /* acceleration, g */
 volatile float   gx_dps, gy_dps, gz_dps;      /* angular rate, deg/s */
+volatile int16_t gx_off, gy_off, gz_off;      /* gyro zero-rate bias, raw counts */
 
 /* Latest BME280 environmental sample, in engineering units. File-scope for the
    same Live Expressions reason as the IMU globals above. The driver's per-chip
@@ -113,6 +131,8 @@ int main(void)
   uint8_t bme_id = 0;                /* raw chip-ID byte read back from the BME280 */
   HAL_StatusTypeDef bme_id_status;   /* result of the I2C read */
   uint8_t mpu_wake = 0x00;           /* value written to PWR_MGMT_1 to clear SLEEP */
+  uint8_t mpu_dlpf;                  /* DLPF config byte written to CONFIG/ACCEL_CONFIG2 */
+  int32_t gx_sum = 0, gy_sum = 0, gz_sum = 0; /* gyro-bias calibration accumulators */
   uint8_t imu_raw[MPU6500_BURST_LEN];/* one atomic burst: accel, temp, gyro */
   HAL_StatusTypeDef imu_status;      /* result of each sampling read */
   /* ax..gz and the g/dps outputs are file-scope globals (see PV) so Live
@@ -180,6 +200,63 @@ int main(void)
     Error_Handler();
   }
 
+  /* Set the gyro/temp and accel Digital Low-Pass Filters. Without this the gyro
+     runs wide-open (~250 Hz bandwidth) and dumps broadband noise into every
+     sample; a ~41/44 Hz cutoff keeps the real (slow) motion and drops the
+     high-frequency jitter. Fail closed like the ID checks. */
+  mpu_dlpf = MPU6500_DLPF_CFG_41HZ;
+  if (HAL_I2C_Mem_Write(&hi2c1, MPU6500_I2C_ADDR, MPU6500_REG_CONFIG,
+                        I2C_MEMADD_SIZE_8BIT, &mpu_dlpf, 1,
+                        MPU6500_I2C_TIMEOUT) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  mpu_dlpf = MPU6500_ADLPF_CFG_44HZ;
+  if (HAL_I2C_Mem_Write(&hi2c1, MPU6500_I2C_ADDR, MPU6500_REG_ACCEL_CONFIG2,
+                        I2C_MEMADD_SIZE_8BIT, &mpu_dlpf, 1,
+                        MPU6500_I2C_TIMEOUT) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* Gyro zero-rate calibration. A MEMS gyro reads a nonzero constant even when
+     perfectly still (the bias we saw as gx ~ 6.77 dps). With the board held
+     still at boot, average a batch of samples per axis - that mean IS the bias -
+     then subtract it from every later reading. Accel is left alone: gravity is
+     its built-in reference.
+     Two requirements for a clean offset: (1) the board must be MOTIONLESS for
+     the whole window - any movement leaks into the mean; (2) let the gyro settle
+     first, since it has a start-up transient right after wake/DLPF-config that
+     would otherwise skew the early samples. */
+  HAL_Delay(100);  /* let the gyro clear its power-on transient before sampling.
+                      Note this does NOT remove the ~0.7 dps residual on gx: that's
+                      thermal bias drift (we calibrate cold, the die then warms and
+                      the bias creeps), which a one-shot boot calibration can't
+                      track. Sub-1 dps at rest is a healthy stationary gyro. */
+  for (uint16_t i = 0; i < MPU6500_GYRO_CAL_SAMPLES; i++)
+  {
+    if (HAL_I2C_Mem_Read(&hi2c1, MPU6500_I2C_ADDR, MPU6500_REG_ACCEL_XOUT_H,
+                         I2C_MEMADD_SIZE_8BIT, imu_raw, MPU6500_BURST_LEN,
+                         MPU6500_I2C_TIMEOUT) == HAL_OK)
+    {
+      gx_sum += (int16_t)((imu_raw[8]  << 8) | imu_raw[9]);
+      gy_sum += (int16_t)((imu_raw[10] << 8) | imu_raw[11]);
+      gz_sum += (int16_t)((imu_raw[12] << 8) | imu_raw[13]);
+    }
+    HAL_Delay(2);
+  }
+  gx_off = (int16_t)(gx_sum / MPU6500_GYRO_CAL_SAMPLES);
+  gy_off = (int16_t)(gy_sum / MPU6500_GYRO_CAL_SAMPLES);
+  gz_off = (int16_t)(gz_sum / MPU6500_GYRO_CAL_SAMPLES);
+
+  /* Reject a contaminated offset per axis: a plausible bias is only a few dps,
+     so a huge value means we averaged in motion or a start-up transient (this is
+     exactly what railed gy). Fall back to no correction for that axis - a bad
+     calibration is worse than none. */
+  if (gx_off > MPU6500_GYRO_BIAS_MAX_CNT || gx_off < -MPU6500_GYRO_BIAS_MAX_CNT) { gx_off = 0; }
+  if (gy_off > MPU6500_GYRO_BIAS_MAX_CNT || gy_off < -MPU6500_GYRO_BIAS_MAX_CNT) { gy_off = 0; }
+  if (gz_off > MPU6500_GYRO_BIAS_MAX_CNT || gz_off < -MPU6500_GYRO_BIAS_MAX_CNT) { gz_off = 0; }
+
   /* Initialize the BME280 once: the driver reads the chip's factory NVM
      calibration and configures oversampling x1 + normal (continuous) mode.
      Unlike the MPU, we can't just scale raw counts - every BME is individually
@@ -215,10 +292,11 @@ int main(void)
       ax = (int16_t)((imu_raw[0]  << 8) | imu_raw[1]);
       ay = (int16_t)((imu_raw[2]  << 8) | imu_raw[3]);
       az = (int16_t)((imu_raw[4]  << 8) | imu_raw[5]);
-      /* imu_raw[6..7] = on-die temperature, unused (telemetry temp is BME280's) */
-      gx = (int16_t)((imu_raw[8]  << 8) | imu_raw[9]);
-      gy = (int16_t)((imu_raw[10] << 8) | imu_raw[11]);
-      gz = (int16_t)((imu_raw[12] << 8) | imu_raw[13]);
+      /* imu_raw[6..7] = on-die temperature, unused (telemetry temp is BME280's).
+         Subtract the boot-time zero-rate bias so a still board reads ~0 dps. */
+      gx = (int16_t)(((int16_t)((imu_raw[8]  << 8) | imu_raw[9]))  - gx_off);
+      gy = (int16_t)(((int16_t)((imu_raw[10] << 8) | imu_raw[11])) - gy_off);
+      gz = (int16_t)(((int16_t)((imu_raw[12] << 8) | imu_raw[13])) - gz_off);
 
       ax_g = ax / MPU6500_ACCEL_SENS;
       ay_g = ay / MPU6500_ACCEL_SENS;
