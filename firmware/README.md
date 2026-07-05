@@ -2,7 +2,7 @@
 
 Bare-metal firmware for the **STM32 Nucleo F401RE**.
 
-Reads the **MPU-6050** (IMU, I²C `0x68`) and **BME280** (temp/humidity/pressure, I²C `0x76`) off a
+Reads the **MPU-6500** (IMU, I²C `0x68`) and **BME280** (temp/humidity/pressure, I²C `0x76`) off a
 shared I²C bus, samples at a fixed rate off a SysTick/timer tick (non-blocking), frames each sample as
 a newline-delimited JSON line, and streams it over UART to the gateway. Also handles the OTA downlink:
 parses inbound config commands and acks them back up the telemetry path.

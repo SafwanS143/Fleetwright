@@ -30,7 +30,7 @@ shows up across embedded fleets everywhere.
 ┌─────────────────────┐      UART       ┌──────────────────────┐      MQTT       ┌──────────────────────────┐
 │  STM32 Nucleo F401RE │  JSON lines     │  Raspberry Pi gateway │  pub/sub        │  Cloud observability      │
 │  ──────────────────  │ ───────────────▶│  ───────────────────  │ ───────────────▶│  ──────────────────────   │
-│  MPU-6050 (IMU)  I²C │                 │  pyserial parse       │                 │  Mosquitto broker         │
+│  MPU-6500 (IMU)  I²C │                 │  pyserial parse       │                 │  Mosquitto broker         │
 │  BME280 (env)    I²C │                 │  bounded ring buffer  │                 │  MQTT→Prometheus bridge   │
 │  bare-metal sampling │◀─────────────── │  paho-mqtt client     │◀─────────────── │  Prometheus + Grafana     │
 │                      │   OTA cmd /cmd  │  (containerized)      │   OTA downlink  │  Isolation Forest + alerts│

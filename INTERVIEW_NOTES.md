@@ -69,6 +69,11 @@ either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
 **One-liner tier:**
 
 - What I²C is: a two-wire (SDA/SCL) master/slave bus using 7-bit addressing.
+- WHO_AM_I as a part-identity check: my "MPU-6050" breakout returned 0x70, not 0x68 — it's
+  a relabeled MPU-6500. Reading the ID register caught a silent BOM substitution before it
+  could confuse later debugging (register-map compatible for what we do, so no code impact).
+
+  I2C is a 2 wire communication interface between a master (STM32) and a slave (sensors), talking synchronously thru the SCL signal, with data going thru the SDA signal.
 
 ## Chunk 5 — Read the IMU
 

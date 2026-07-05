@@ -31,11 +31,18 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* MPU-6050 sits at 7-bit I2C address 0x68. STM32 HAL wants the 8-bit form
-   (7-bit value left-shifted, leaving room for the R/W bit), so pass 0x68 << 1. */
-#define MPU6050_I2C_ADDR   (0x68 << 1)
-#define MPU6050_REG_WHOAMI  0x75U    /* returns 0x68 on a genuine part */
-#define MPU6050_I2C_TIMEOUT 100U     /* ms */
+/* The "MPU-6050" GY-521 breakout is actually populated with an MPU-6500
+   (WHO_AM_I reads 0x70, not the 6050's 0x68) - a common substitution on
+   cheap modules. The MPU-6500 is register-map compatible for everything we
+   do: same 7-bit address (0x68), same PWR_MGMT_1 sleep bit, and identical
+   accel/gyro sensitivity scale factors, so the sampling/conversion code is
+   unchanged. (The two parts' on-die temperature formulas differ, but that
+   doesn't affect us - telemetry temperature comes from the BME280, not the
+   IMU.) */
+#define MPU6500_I2C_ADDR    (0x68 << 1)  /* 7-bit 0x68, HAL wants it << 1 */
+#define MPU6500_REG_WHOAMI  0x75U
+#define MPU6500_WHOAMI_ID   0x70U        /* MPU-6500 (an MPU-6050 reads 0x68) */
+#define MPU6500_I2C_TIMEOUT 100U         /* ms */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -99,15 +106,18 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  /* Read the MPU-6050 WHO_AM_I register as an I2C sanity check. */
+  /* Read the MPU-6500 WHO_AM_I register as an I2C sanity check (expect 0x70). */
   whoami_status = HAL_I2C_Mem_Read(&hi2c1,
-                                   MPU6050_I2C_ADDR,
-                                   MPU6050_REG_WHOAMI,
+                                   MPU6500_I2C_ADDR,
+                                   MPU6500_REG_WHOAMI,
                                    I2C_MEMADD_SIZE_8BIT,
                                    &who_am_i,
                                    1,
-                                   MPU6050_I2C_TIMEOUT);
-  (void)whoami_status;   /* inspect in the debugger; wired up for real in a later chunk */
+                                   MPU6500_I2C_TIMEOUT);
+  if (whoami_status != HAL_OK || who_am_i != MPU6500_WHOAMI_ID)
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */

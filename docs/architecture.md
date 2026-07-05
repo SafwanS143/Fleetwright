@@ -14,7 +14,7 @@ telematics unit** split, and it's the central systems-design decision of the pro
 ```mermaid
 flowchart LR
     subgraph EDGE["Edge device — STM32 Nucleo F401RE (bare-metal)"]
-        IMU["MPU-6050 IMU\n(accel + gyro)\nI²C @ 0x68"]
+        IMU["MPU-6500 IMU\n(accel + gyro)\nI²C @ 0x68"]
         ENV["BME280\n(temp/humidity/pressure)\nI²C @ 0x76"]
         FW["Sampling loop\nJSON-line framing\nseq # + heartbeat"]
         IMU -->|I²C bus| FW
