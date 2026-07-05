@@ -91,6 +91,8 @@ either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
 - Two devices, one I²C bus: they coexist fine since each has its own 7-bit address, no extra wiring
   needed.
 
+  The MPU and BME both live on the same SDA and SCL bus, and the MCU talks to them by specifying an address, 0x68 for the MPU and 0x70 for the BME.
+
 ## Chunk 7 — Non-blocking sampling
 
 **One-liner tier:**
