@@ -43,6 +43,19 @@
 #define MPU6500_REG_WHOAMI  0x75U
 #define MPU6500_WHOAMI_ID   0x70U        /* MPU-6500 (an MPU-6050 reads 0x68) */
 #define MPU6500_I2C_TIMEOUT 100U         /* ms */
+#define MPU6500_REG_PWR_MGMT_1   0x6BU   /* write 0x00 to clear SLEEP on boot */
+#define MPU6500_REG_ACCEL_XOUT_H 0x3BU   /* first of the 14 burst data bytes */
+#define MPU6500_BURST_LEN        14U     /* accel(6) + temp(2) + gyro(6) */
+#define MPU6500_ACCEL_SENS       16384.0f/* LSB per g,   default +/-2 g   range */
+#define MPU6500_GYRO_SENS        131.0f  /* LSB per dps, default +/-250 dps range */
+
+/* BME280 chip-ID sanity check: genuine BME280 reports 0x60 in its id register.
+   A BMP280 reports 0x58 and has NO humidity sensor, so it would silently break
+   the humidity telemetry field - verify the part before trusting it. */
+#define BME280_I2C_ADDR     (0x76 << 1)  /* 7-bit 0x76, HAL wants it << 1 */
+#define BME280_REG_ID       0xD0U
+#define BME280_CHIP_ID      0x60U        /* BME280 (a BMP280 reads 0x58) */
+#define BME280_I2C_TIMEOUT  100U         /* ms */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,7 +69,13 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+/* Latest IMU sample. File-scope (not locals in main) so the debugger's Live
+   Expressions can resolve them while the target is running - a stack local has
+   no fixed address to read live. volatile keeps each new sample from being
+   optimized away before the JSON telemetry chunk consumes it. */
+volatile int16_t ax, ay, az, gx, gy, gz;      /* raw signed 16-bit counts */
+volatile float   ax_g, ay_g, az_g;            /* acceleration, g */
+volatile float   gx_dps, gy_dps, gz_dps;      /* angular rate, deg/s */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -83,6 +102,13 @@ int main(void)
   /* USER CODE BEGIN 1 */
   uint8_t who_am_i = 0;              /* raw WHO_AM_I byte read back from the MPU */
   HAL_StatusTypeDef whoami_status;   /* result of the I2C read */
+  uint8_t bme_id = 0;                /* raw chip-ID byte read back from the BME280 */
+  HAL_StatusTypeDef bme_id_status;   /* result of the I2C read */
+  uint8_t mpu_wake = 0x00;           /* value written to PWR_MGMT_1 to clear SLEEP */
+  uint8_t imu_raw[MPU6500_BURST_LEN];/* one atomic burst: accel, temp, gyro */
+  HAL_StatusTypeDef imu_status;      /* result of each sampling read */
+  /* ax..gz and the g/dps outputs are file-scope globals (see PV) so Live
+     Expressions can watch them while the target runs. */
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -118,6 +144,33 @@ int main(void)
   {
     Error_Handler();
   }
+
+  /* Read the BME280 chip-ID register as an I2C sanity check (expect 0x60). */
+  bme_id_status = HAL_I2C_Mem_Read(&hi2c1,
+                                   BME280_I2C_ADDR,
+                                   BME280_REG_ID,
+                                   I2C_MEMADD_SIZE_8BIT,
+                                   &bme_id,
+                                   1,
+                                   BME280_I2C_TIMEOUT);
+  if (bme_id_status != HAL_OK || bme_id != BME280_CHIP_ID)
+  {
+    Error_Handler();
+  }
+
+  /* Wake the MPU-6500: on power-up SLEEP is set and the data registers never
+     update. Writing 0x00 to PWR_MGMT_1 clears SLEEP and selects the internal
+     clock. Must succeed, so fail closed like the ID checks. */
+  if (HAL_I2C_Mem_Write(&hi2c1,
+                        MPU6500_I2C_ADDR,
+                        MPU6500_REG_PWR_MGMT_1,
+                        I2C_MEMADD_SIZE_8BIT,
+                        &mpu_wake,
+                        1,
+                        MPU6500_I2C_TIMEOUT) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -129,6 +182,35 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Sample the IMU: one 14-byte burst from ACCEL_XOUT_H (the MPU auto-
+       increments its register pointer), then split each high/low pair into a
+       signed count and scale to engineering units. */
+    imu_status = HAL_I2C_Mem_Read(&hi2c1,
+                                  MPU6500_I2C_ADDR,
+                                  MPU6500_REG_ACCEL_XOUT_H,
+                                  I2C_MEMADD_SIZE_8BIT,
+                                  imu_raw,
+                                  MPU6500_BURST_LEN,
+                                  MPU6500_I2C_TIMEOUT);
+    if (imu_status == HAL_OK)
+    {
+      ax = (int16_t)((imu_raw[0]  << 8) | imu_raw[1]);
+      ay = (int16_t)((imu_raw[2]  << 8) | imu_raw[3]);
+      az = (int16_t)((imu_raw[4]  << 8) | imu_raw[5]);
+      /* imu_raw[6..7] = on-die temperature, unused (telemetry temp is BME280's) */
+      gx = (int16_t)((imu_raw[8]  << 8) | imu_raw[9]);
+      gy = (int16_t)((imu_raw[10] << 8) | imu_raw[11]);
+      gz = (int16_t)((imu_raw[12] << 8) | imu_raw[13]);
+
+      ax_g = ax / MPU6500_ACCEL_SENS;
+      ay_g = ay / MPU6500_ACCEL_SENS;
+      az_g = az / MPU6500_ACCEL_SENS;
+      gx_dps = gx / MPU6500_GYRO_SENS;
+      gy_dps = gy / MPU6500_GYRO_SENS;
+      gz_dps = gz / MPU6500_GYRO_SENS;
+    }
+    /* A dropped sample leaves the previous values in place for now; proper
+       error handling / degraded state lands in a later chunk. */
   }
   /* USER CODE END 3 */
 }
