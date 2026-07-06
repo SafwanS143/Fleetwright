@@ -127,4 +127,8 @@ either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
 
 _Why seq# (packet-loss detection); why heartbeat (basis of the freshness SLI, liveness ≠ payload)._
 
+The seq number detects any packet loss, as all the JSON objects should be numbered in order, and if any go missing then it's clear.
+
+The heartbeat signal every 5s is very similar to a liveness probe, it makes sure that the MCU is alive and the connection between the MCU and the gateway is working, narrowing telemetry problems to the sensors and firmware drivers. The payload (the sensor data) isn't relied on for the heartbeat signal.
+
 <!-- Phases 2-7 stubs added as you reach them. -->
