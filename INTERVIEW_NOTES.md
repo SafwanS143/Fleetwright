@@ -131,4 +131,118 @@ The seq number detects any packet loss, as all the JSON objects should be number
 
 The heartbeat signal every 5s is very similar to a liveness probe, it makes sure that the MCU is alive and the connection between the MCU and the gateway is working, narrowing telemetry problems to the sensors and firmware drivers. The payload (the sensor data) isn't relied on for the heartbeat signal.
 
-<!-- Phases 2-7 stubs added as you reach them. -->
+---
+
+# Phase 2 — Gateway (MQTT is the key new skill)
+
+_The Pi stops being "the thing SSH runs on" and becomes the connectivity gateway: it reads the
+Nucleo's serial stream, republishes it over MQTT, survives broker/device outages, and ships as a
+container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store-and-forward._
+
+**Tier 1 — Interview-critical, full depth:**
+
+1. Gateway-parse hop — Chunk 10 (partial-line buffering until newline; the second hop after
+   firmware in the troubleshooting chain).
+2. Pub/sub + the broker's job — Chunk 11 (decouples producers from consumers).
+3. QoS / retained / LWT + why MQTT over HTTP — Chunk 12.
+4. Store-and-forward — Chunk 13 (in-flight messages on a drop; why the buffer is _bounded_).
+5. Serial device passthrough into the container — Chunk 14.
+
+## Chunk 10 — Pi reads serial
+
+**One-liner tier:**
+
+- How a Linux process gets at the device: it opens the character device the kernel exposes for the
+  USB-serial adapter — `/dev/ttyACM0`.
+
+  _(your answer here)_
+
+**Interview-critical tier:**
+
+- What happens on a partial line and how you buffer until newline — this is the gateway-parse hop in
+  the troubleshooting chain. A read can return half a JSON line (or one-and-a-half); you accumulate
+  bytes and only parse a record once you've seen the newline delimiter, holding the remainder for the
+  next read. Also: reconnect cleanly if the Nucleo is unplugged/replugged.
+
+  _(your answer here)_
+
+## Chunk 11 — Mosquitto broker + first publish
+
+**Interview-critical tier:**
+
+- The pub/sub model and what a broker is _for_: producers publish to topics, consumers subscribe;
+  neither knows about the other. The broker decouples them — the gateway doesn't need to know who
+  (or how many) is consuming, and consumers can come and go without the gateway changing.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- Topic design and why hierarchical: topics like `fleet/<id>/telemetry` — the hierarchy lets a
+  subscriber wildcard across the fleet (`fleet/+/telemetry`) or narrow to one device.
+
+  _(your answer here)_
+
+## Chunk 12 — MQTT depth: QoS, retained, last-will
+
+**Interview-critical tier:**
+
+- QoS 0/1/2 delivery guarantees and which you chose + why:
+  - QoS 0 — at most once (fire-and-forget, may be lost).
+  - QoS 1 — at least once (acked, may duplicate).
+  - QoS 2 — exactly once (four-way handshake, slowest).
+  Say which you picked for telemetry and the tradeoff behind it.
+
+  _(your answer here)_
+
+- Retained messages: the broker keeps the last message on a topic so a _new_ subscriber gets current
+  status immediately instead of waiting for the next publish.
+
+  _(your answer here)_
+
+- Last-Will-and-Testament: a message the broker publishes on the gateway's behalf if the connection
+  drops uncleanly — so a dead gateway marks its device offline without any live code running.
+
+  _(your answer here)_
+
+- Why MQTT for fleet telemetry instead of plain HTTP.
+
+  _(your answer here)_
+
+## Chunk 13 — Ring buffer / store-and-forward
+
+**Interview-critical tier:**
+
+- What happens to in-flight messages when the gateway drops, and how the buffer covers it: when the
+  broker is unreachable, telemetry is buffered locally and flushed on reconnect so nothing is lost up
+  to buffer size.
+
+  _(your answer here)_
+
+- Why _bounded_: an unbounded buffer would grow until the 2GB Pi runs out of memory during a long
+  outage. A bounded ring buffer applies backpressure / drops oldest — memory safety over completeness.
+
+  _(your answer here)_
+
+## Chunk 14 — Containerize the gateway
+
+**One-liner tier:**
+
+- What a container actually is (namespaces + cgroups) and how it differs from a VM: shared kernel,
+  isolated view of the system — not a full guest OS like a VM.
+
+  _(your answer here)_
+
+- When you'd run a plain `systemd` service instead of a container.
+
+  _(your answer here)_
+
+**Interview-critical tier:**
+
+- How the container reaches the serial device (device passthrough): `/dev/ttyACM0` has to be passed
+  into the container explicitly (e.g. `--device`), because a container doesn't see host devices by
+  default. `FLEET_SERIAL_PORT` env var selects which port the reader opens.
+
+  _(your answer here)_
+
+<!-- Phases 3-7 stubs added as you reach them. -->
