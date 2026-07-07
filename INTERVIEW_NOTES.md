@@ -155,7 +155,7 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
 - How a Linux process gets at the device: it opens the character device the kernel exposes for the
   USB-serial adapter — `/dev/ttyACM0`.
 
-  _(your answer here)_
+  The kernel talks to IO devices thru files. It sets a file called `/dev/ttyACM0`, and that's what allows reading from the Pi. A character device just means a device that sends a stream of data.
 
 **Interview-critical tier:**
 
@@ -164,7 +164,7 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
   bytes and only parse a record once you've seen the newline delimiter, holding the remainder for the
   next read. Also: reconnect cleanly if the Nucleo is unplugged/replugged.
 
-  _(your answer here)_
+  The Pi detects new objects via the newline. If there's a partial line, this means that the communication between the firmware and Pi is off, like failing to give newlines or the script is producing values that aren't quite what we're looking for. If no lines are coming at all, then it's a problem with the firmware/connection.
 
 ## Chunk 11 — Mosquitto broker + first publish
 
@@ -191,7 +191,7 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
   - QoS 0 — at most once (fire-and-forget, may be lost).
   - QoS 1 — at least once (acked, may duplicate).
   - QoS 2 — exactly once (four-way handshake, slowest).
-  Say which you picked for telemetry and the tradeoff behind it.
+    Say which you picked for telemetry and the tradeoff behind it.
 
   _(your answer here)_
 
