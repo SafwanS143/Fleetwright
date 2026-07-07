@@ -12,11 +12,12 @@ import json
 import time
 import serial
 from serial import SerialException
+import os
 
 # Prefer the stable by-id symlink over /dev/ttyACM0 -- ACM numbering can change
 # on replug, the by-id path does not. Find yours with:
 #   ls -l /dev/serial/by-id/
-PORT = "/dev/ttyACM0"
+PORT = os.environ.get("FLEET_SERIAL_PORT", "/dev/ttyACM0")
 BAUD = 115200
 READ_TIMEOUT = 1.0             # seconds; read() returns after this even with no data
 RECONNECT_DELAY = 2.0          # seconds between reconnect attempts
