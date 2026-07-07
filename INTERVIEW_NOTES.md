@@ -30,10 +30,10 @@ are exactly the gaps an interviewer will find.
 _TCP vs UDP for SSH (why TCP, port 22); what systemd is; systemctl/journalctl; what DNS resolves._
 
 1 - TCP vs UDP:
-TCP ensures all packets are sent in order, and resends if missing. This is slower but necessary for ssh commands, compared to UDP which is faster but doesn't guarantee packet integrity
+TCP ensures all packets are sent in order, and resends if missing. This is slower but necessary for ssh commands, compared to UDP which is faster but doesn't have sequencing or resending
 
 2 - What systemd is:
-systemd is the startup control in the OS of the Raspberry Pi. It controls all the services that run, including SSH. If bugs are encountered, then the logs for systemd will greatly benefit debugging (systemctl - logs for SSH status/journalctl - actual SSH instructions ran)
+systemd is the init system in the OS of the Raspberry Pi. It controls all the services that run, including SSH. If bugs are encountered, then the logs for systemd will greatly benefit debugging (systemctl - logs for SSH status, and recent connections/journalctl - actual log outputs)
 
 3 - The DNS resolves the issue of remembering the IP of something. For example fleet-gw is easy to remember but 192.193.13.27 is hard. The DNS solves that by tracking and translating IPs to links. The mDNS is the local network version of that, where a device would respond when scanned for a certain name.
 
@@ -91,7 +91,7 @@ either compressed or dropped. Chunks 1-2 are untouched (already right-sized)._
 - Two devices, one I²C bus: they coexist fine since each has its own 7-bit address, no extra wiring
   needed.
 
-  The MPU and BME both live on the same SDA and SCL bus, and the MCU talks to them by specifying an address, 0x68 for the MPU and 0x70 for the BME.
+  The MPU and BME both live on the same SDA and SCL bus, and the MCU talks to them by specifying an address, 0x68 for the MPU and 0x76 for the BME.
 
 ## Chunk 7 — Non-blocking sampling
 
@@ -164,7 +164,7 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
   bytes and only parse a record once you've seen the newline delimiter, holding the remainder for the
   next read. Also: reconnect cleanly if the Nucleo is unplugged/replugged.
 
-  The Pi detects new objects via the newline. If there's a partial line, this means that the communication between the firmware and Pi is off, like failing to give newlines or the script is producing values that aren't quite what we're looking for. If no lines are coming at all, then it's a problem with the firmware/connection.
+  The Pi detects new objects via the newline. If there's a partial line, that's normal serial communication. It keeps buffering until you detect a \n, in which it processes the line as a complete JSON object. The rest will stay in the buffer for the next object. This also helps with debugging and narrowing down problems in case of unexpected JSON outputs.
 
 ## Chunk 11 — Mosquitto broker + first publish
 
