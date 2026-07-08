@@ -174,14 +174,17 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
   neither knows about the other. The broker decouples them — the gateway doesn't need to know who
   (or how many) is consuming, and consumers can come and go without the gateway changing.
 
-  _(your answer here)_
+  Publish: Device give data to the broker
+  Subscribe: Device/service allows receiving of messages from a broker
+
+  The pub/sub model is a model that allows for data to be transmitted from a device to device/service thru a broker, via messages that fall under topics. The broker is essentially a middleman that accepts messages from publishers and distributes messages to subscribers. This is beneficial so you can decouple the device giving data (Pi) from the services accepting data. This is useful because without it, each service would need it's own stream of data set up, which gets messy, and requires the Pi to know all the services which require the data and would have to deal with failures regarding said connections. This abstracts that whole layer to a middleman with conviniency using topics.
 
 **One-liner tier:**
 
 - Topic design and why hierarchical: topics like `fleet/<id>/telemetry` — the hierarchy lets a
   subscriber wildcard across the fleet (`fleet/+/telemetry`) or narrow to one device.
 
-  _(your answer here)_
+  This makes it easy to scale horizontally and add more devices, getting messages from a certain device, as well as allowing data from all devices in a certain subtopic, like telemetry
 
 ## Chunk 12 — MQTT depth: QoS, retained, last-will
 
