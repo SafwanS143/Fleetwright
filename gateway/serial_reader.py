@@ -29,6 +29,7 @@ def open_serial() -> serial.Serial:
     while True:
         try:
             ser = serial.Serial(PORT, BAUD, timeout=READ_TIMEOUT)
+            ser.reset_input_buffer()
             print(f"[serial] connected {PORT} @ {BAUD}")
             return ser
         except (SerialException, OSError) as e:
