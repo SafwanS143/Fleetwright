@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-gateway/serial_reader.py  --  Chunk 11 (Pi reads serial -> publishes to MQTT)
+gateway/serial_reader.py  --  Chunk 12 (QoS, retained status, last-will)
 
 Reads NDJSON telemetry from the Nucleo over the ST-LINK virtual COM port,
 buffers raw bytes until a newline, parses each complete line as JSON, and
-publishes each valid message to the Mosquitto broker. Reconnects the serial
-side automatically if the Nucleo is unplugged/replugged.
+publishes it to the Mosquitto broker. Publishes a retained connection-state
+message on connect, and registers a Last-Will so an ungraceful death marks
+the gateway offline without any code of ours running.
 
 Run on the Pi:  python3 gateway/serial_reader.py   (Ctrl-C to stop)
 """
@@ -29,7 +30,25 @@ MAX_LINE = 4096                # a real telemetry line is ~200B; larger w/o a ne
 # by changing an env var, not the code.
 BROKER_HOST = os.environ.get("FLEET_MQTT_HOST", "localhost")
 BROKER_PORT = int(os.environ.get("FLEET_MQTT_PORT", "1883"))
-MQTT_KEEPALIVE = 60            # seconds; paho pings the broker this often to stay alive
+
+# Identity must be known BEFORE connect, because the Last-Will topic is sent
+# inside the CONNECT packet -- before a single telemetry line has been read.
+# So identity is configuration, not payload.
+DEVICE_ID = os.environ.get("FLEET_DEVICE_ID", "fleet-edge-01")
+
+TOPIC_TELEMETRY = f"fleet/{DEVICE_ID}/telemetry"
+TOPIC_HEARTBEAT = f"fleet/{DEVICE_ID}/heartbeat"
+TOPIC_STATUS    = f"fleet/{DEVICE_ID}/status"   # retained connection state ONLY
+
+# 30s => broker declares us dead after ~45s of silence (1.5x keepalive).
+# That figure IS the MTTD floor for gateway death: nothing downstream can know
+# sooner, because the fact doesn't exist until the broker publishes our will.
+# Chosen against the availability SLO, not taken from paho's 60s default.
+MQTT_KEEPALIVE = 30
+
+STATUS_ONLINE   = json.dumps({"id": DEVICE_ID, "state": "online"})
+STATUS_LWT      = json.dumps({"id": DEVICE_ID, "state": "offline", "reason": "lwt"})
+STATUS_SHUTDOWN = json.dumps({"id": DEVICE_ID, "state": "offline", "reason": "shutdown"})
 
 
 def open_serial() -> serial.Serial:
@@ -50,17 +69,38 @@ def open_serial() -> serial.Serial:
             time.sleep(RECONNECT_DELAY)
 
 
+def on_connect(client, userdata, connect_flags, reason_code, properties):
+    """Fires on EVERY successful connection, including paho's auto-reconnects.
+    That is exactly why the retained 'online' publish lives here and not inline
+    after connect(): a gateway that reconnects after a network blip must restore
+    its own status, or the broker keeps serving the retained 'offline' will."""
+    if reason_code != 0:
+        print(f"[mqtt] connect failed: {reason_code}")
+        return
+    print(f"[mqtt] connected to {BROKER_HOST}:{BROKER_PORT}")
+    # QoS 1 + retain: state must arrive, and must be there for late subscribers.
+    client.publish(TOPIC_STATUS, STATUS_ONLINE, qos=1, retain=True)
+    print(f"[mqtt] {TOPIC_STATUS} online (retained)")
+
+
 def make_mqtt_client() -> mqtt.Client:
     """Connect to the broker and start a background network thread.
     loop_start() runs paho's I/O on its own thread so our serial read loop
     stays in control -- loop_forever() would block and starve the reader.
     CallbackAPIVersion.VERSION2 is mandatory in paho-mqtt 2.x."""
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.on_connect = on_connect
+
+    # The will travels INSIDE the CONNECT packet, so it must be registered
+    # before any connect call. Retained, because a subscriber that arrives
+    # after our death must not be served the stale 'online' message.
+    client.will_set(TOPIC_STATUS, STATUS_LWT, qos=1, retain=True)
+
     # connect_async + loop_start defers the connect to paho's thread and retries,
     # so a broker that's down at boot doesn't crash the gateway (symmetric with open_serial).
     client.connect_async(BROKER_HOST, BROKER_PORT, MQTT_KEEPALIVE)
     client.loop_start()
-    print(f"[mqtt] connecting to {BROKER_HOST}:{BROKER_PORT}")
+    print(f"[mqtt] connecting to {BROKER_HOST}:{BROKER_PORT} (keepalive {MQTT_KEEPALIVE}s)")
     return client
 
 
@@ -87,12 +127,17 @@ def handle_line(raw: bytes, client: mqtt.Client):
         print(f"[parse] skipping bad line: {raw!r}")
         return
 
-    device_id = msg.get("id", "unknown")
-    # Heartbeats go to .../status, telemetry to .../telemetry. Splitting them
-    # sets up retained-status + last-will in Chunk 12 and shows topic hierarchy.
-    subtopic = "status" if msg.get("type") == "heartbeat" else "telemetry"
-    topic = f"fleet/{device_id}/{subtopic}"
-    client.publish(topic, json.dumps(msg))     # QoS 0 (default) -- QoS is Chunk 12
+    # /status is reserved for retained CONNECTION state (online/offline).
+    # The firmware heartbeat is a different fault domain -- device liveness,
+    # not link liveness -- so it gets its own topic. Publishing it to /status
+    # would clobber the retained will marker.
+    topic = TOPIC_HEARTBEAT if msg.get("type") == "heartbeat" else TOPIC_TELEMETRY
+
+    # QoS 0: telemetry is a sample of a continuous signal. A lost sample is a
+    # gap I can DETECT via seq#, and a retransmitted 400ms-old accel reading is
+    # worthless -- freshness is the SLI, not completeness. QoS 1 would also
+    # duplicate messages and corrupt the Prometheus counters in Chunk 15.
+    client.publish(topic, json.dumps(msg), qos=0, retain=False)
     print(f"[mqtt] {topic} {msg}")
 
 
@@ -124,8 +169,15 @@ def main():
             for line in extract_lines(buf):
                 handle_line(line, client)
     finally:
-        # Clean shutdown even on Ctrl-C: stop the network thread and disconnect
-        # so we don't leave a half-open connection on the broker.
+        # A CLEAN disconnect suppresses the will -- the broker assumes we meant
+        # to leave. So we must overwrite the retained status ourselves, or it
+        # says 'online' forever after a graceful Ctrl-C.
+        info = client.publish(TOPIC_STATUS, STATUS_SHUTDOWN, qos=1, retain=True)
+        try:
+            info.wait_for_publish(timeout=2.0)   # network thread is still alive here
+        except Exception:
+            pass
+        print(f"[mqtt] {TOPIC_STATUS} offline (retained)")
         client.loop_stop()
         client.disconnect()
         print("[mqtt] disconnected")
