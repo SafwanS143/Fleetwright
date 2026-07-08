@@ -12,7 +12,6 @@ Run on the Pi:  python3 gateway/serial_reader.py   (Ctrl-C to stop)
 import json
 import time
 import serial
-from serial import SerialException
 import os
 import paho.mqtt.client as mqtt
 
@@ -23,6 +22,7 @@ PORT = os.environ.get("FLEET_SERIAL_PORT", "/dev/ttyACM0")
 BAUD = 115200
 READ_TIMEOUT = 1.0             # seconds; read() returns after this even with no data
 RECONNECT_DELAY = 2.0          # seconds between reconnect attempts
+MAX_LINE = 4096                # a real telemetry line is ~200B; larger w/o a newline = framing fault
 
 # Broker host/port are env vars for the same reason PORT is: when the broker
 # migrates from the Pi to the cloud in Chunk 16, the same committed file works
@@ -45,7 +45,7 @@ def open_serial() -> serial.Serial:
             ser.reset_input_buffer()
             print(f"[serial] connected {PORT} @ {BAUD}")
             return ser
-        except (SerialException, OSError) as e:
+        except OSError as e:   # serial.SerialException subclasses OSError
             print(f"[serial] {PORT} not ready ({e}); retry in {RECONNECT_DELAY}s")
             time.sleep(RECONNECT_DELAY)
 
@@ -56,9 +56,11 @@ def make_mqtt_client() -> mqtt.Client:
     stays in control -- loop_forever() would block and starve the reader.
     CallbackAPIVersion.VERSION2 is mandatory in paho-mqtt 2.x."""
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    client.connect(BROKER_HOST, BROKER_PORT, MQTT_KEEPALIVE)
+    # connect_async + loop_start defers the connect to paho's thread and retries,
+    # so a broker that's down at boot doesn't crash the gateway (symmetric with open_serial).
+    client.connect_async(BROKER_HOST, BROKER_PORT, MQTT_KEEPALIVE)
     client.loop_start()
-    print(f"[mqtt] connected {BROKER_HOST}:{BROKER_PORT}")
+    print(f"[mqtt] connecting to {BROKER_HOST}:{BROKER_PORT}")
     return client
 
 
@@ -102,7 +104,7 @@ def main():
         while True:
             try:
                 chunk = ser.read(256)     # up to 256 bytes, or fewer after timeout
-            except (SerialException, OSError) as e:
+            except OSError as e:          # serial.SerialException subclasses OSError
                 print(f"[serial] lost device ({e}); reconnecting")
                 try:
                     ser.close()
@@ -116,6 +118,9 @@ def main():
                 continue                  # timeout, no bytes this round
 
             buf.extend(chunk)
+            if len(buf) > MAX_LINE and b"\n" not in buf:
+                print(f"[serial] no newline in {len(buf)}B; framing fault, dropping buffer")
+                buf.clear()
             for line in extract_lines(buf):
                 handle_line(line, client)
     finally:
