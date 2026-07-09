@@ -1,0 +1,16 @@
+# The venv is host-specific: it hardcodes an interpreter path and holds arm64 or
+
+# x86_64 artifacts depending on where it was built. Copying it in would defeat
+
+# the entire reason for the image -- dependency identity.
+
+.venv/
+venv/
+**pycache**/
+_.pyc
+_.pyo
+
+.git/
+.gitignore
+\*.md
+docs/

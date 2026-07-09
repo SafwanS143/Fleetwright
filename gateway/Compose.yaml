@@ -1,0 +1,39 @@
+services:
+  gateway:
+    build: .
+    image: fleetwright/gateway:0.1.0
+    container_name: fleet-gateway
+    restart: unless-stopped
+
+    # Pure MQTT client, binds no ports. Bridge networking would put 127.0.0.1
+    # in its own netns and refuse the connect to the host's Mosquitto.
+    network_mode: host
+
+    # Must exceed the finally block's 2s wait_for_publish, or docker SIGKILLs
+    # mid-shutdown and the will fires on a planned stop.
+    stop_grace_period: 15s
+
+    # Host's live devtmpfs, not `devices:` — udev's by-id symlinks only exist
+    # here, and a `devices:` node is frozen at container start (breaks replug).
+    volumes:
+      - /dev:/dev
+
+    # Mounting the node isn't enough; the device cgroup denies open() with EPERM.
+    # 166 = USB ACM. (188 = ttyUSB, if you ever swap to FTDI/CP210x.)
+    device_cgroup_rules:
+      - "c 166:* rmw"
+
+    environment:
+      FLEET_SERIAL_PORT: /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF515086874967243256-if02
+      FLEET_MQTT_HOST: "127.0.0.1"
+      FLEET_MQTT_PORT: "1883"
+      FLEET_DEVICE_ID: fleet-edge-01
+      FLEET_BUFFER_MAXLEN: "6000"
+      FLEET_DRAIN_BATCH: "50"
+
+    # Uncapped json-file fills the SD card and takes the gateway down with it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

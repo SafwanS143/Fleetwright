@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gateway/serial_reader.py  --  Chunk 13 (bounded ring buffer / store-and-forward)
+gateway/serial_reader.py  --  Chunk 14 (containerized gateway)
 
 Reads NDJSON telemetry from the Nucleo over the ST-LINK virtual COM port,
 buffers raw bytes until a newline, parses each complete line as JSON, and
@@ -8,16 +8,13 @@ publishes it to the Mosquitto broker. Publishes a retained connection-state
 message on connect, and registers a Last-Will so an ungraceful death marks
 the gateway offline without any code of ours running.
 
-Chunk 13: telemetry no longer publishes directly. It goes into a bounded ring
-buffer, and a rate-limited drain is the ONLY publisher. A broker outage now
-costs latency instead of data.
-
-Run on the Pi:  python3 gateway/serial_reader.py   (Ctrl-C to stop)
+Run on the Pi:  docker compose up -d   (or python3 gateway/serial_reader.py)
 """
 import json
 import time
 import serial
 import os
+import signal
 import sys
 from collections import deque
 import paho.mqtt.client as mqtt
@@ -36,15 +33,39 @@ def log(*args, **kwargs):
     mid-packet. No DISCONNECT reaches the broker, the will fires, and a planned
     shutdown is recorded as an ungraceful death. Logging must never be able to
     change the system's observable state.
+
+    Under Docker, stdout is a PIPE to the daemon, not a tty. CPython picks its
+    buffering mode from isatty(), so stdout goes fully-buffered at 8 KB and
+    `docker logs -f` shows nothing for ~15 minutes on a 90-byte/10s log rate.
+    PYTHONUNBUFFERED=1 in the Dockerfile is what keeps this function honest --
+    same lesson as the BrokenPipe fix: the observability path must not
+    misrepresent the state it exists to report.
     """
     try:
         print(*args, **kwargs)
     except BrokenPipeError:
         pass
 
+
+def _on_sigterm(signum, frame):
+    """Convert SIGTERM into the same exception Ctrl-C raises.
+
+    Raised from the main thread between bytecodes; PEP 475 means a blocking
+    ser.read() or time.sleep() is interrupted, the handler runs, and the
+    exception propagates out of main()'s try -- so the finally block executes and
+    the retained status is correctly written as reason:shutdown.
+    """
+    raise KeyboardInterrupt
+
+
 # Prefer the stable by-id symlink over /dev/ttyACM0 -- ACM numbering can change
 # on replug, the by-id path does not. Find yours with:
 #   ls -l /dev/serial/by-id/
+# Inside the container this path only exists because /dev is bind-mounted from
+# the host: the by-id symlinks are created by udev, which runs on the host and
+# knows nothing about our container. `--device` would have given us a frozen
+# (major,minor) node instead, and a replug that renumbered to ttyACM1 would
+# leave us retrying a node that can never open again.
 PORT = os.environ.get("FLEET_SERIAL_PORT", "/dev/ttyACM0")
 BAUD = 115200
 READ_TIMEOUT = 1.0             # seconds; read() returns after this even with no data
@@ -53,7 +74,9 @@ MAX_LINE = 4096                # a real telemetry line is ~200B; larger w/o a ne
 
 # Broker host/port are env vars for the same reason PORT is: when the broker
 # migrates from the Pi to the cloud in Chunk 16, the same committed file works
-# by changing an env var, not the code.
+# by changing an env var, not the code. Today the container runs with
+# network_mode: host, so 127.0.0.1 reaches the Pi's Mosquitto directly; under
+# bridge networking this becomes a Compose service name. No code change either way.
 BROKER_HOST = os.environ.get("FLEET_MQTT_HOST", "localhost")
 BROKER_PORT = int(os.environ.get("FLEET_MQTT_PORT", "1883"))
 
@@ -87,6 +110,11 @@ STATUS_SHUTDOWN = json.dumps({"id": DEVICE_ID, "state": "offline", "reason": "sh
 # resident. Sized to the outage class we intend to survive (broker restart,
 # network blip) -- NOT to an all-day outage, whose backlog Prometheus could not
 # use anyway (it stamps samples at scrape time, so a flush does not backfill).
+#
+# Note the buffer is heap memory in a container with no memory limit set today.
+# If a `mem_limit` is ever added, it must exceed BUFFER_MAXLEN * frame_size plus
+# the interpreter, or the cgroup OOM killer reintroduces exactly the failure the
+# bound was chosen to prevent -- with less warning, since the kill is external.
 BUFFER_MAXLEN = int(os.environ.get("FLEET_BUFFER_MAXLEN", "6000"))
 
 # Max frames published per pass through the read loop. A greedy flush would not
@@ -101,7 +129,12 @@ STAT_INTERVAL = 10.0           # seconds between [stat] lines
 
 def open_serial() -> serial.Serial:
     """Block until the port opens, then return the handle. Retries forever so
-    the gateway can be started before the Nucleo is plugged in."""
+    the gateway can be started before the Nucleo is plugged in.
+
+    Retrying forever is only correct because /dev is the host's live devtmpfs:
+    when udev recreates the by-id symlink on replug, this loop sees it. With a
+    `--device` passthrough the node inside the container is a frozen copy, and
+    this loop would spin on ENXIO until someone recreated the container."""
     while True:
         try:
             ser = serial.Serial(PORT, BAUD, timeout=READ_TIMEOUT)
@@ -113,6 +146,9 @@ def open_serial() -> serial.Serial:
             log(f"[serial] connected {PORT} @ {BAUD}")
             return ser
         except OSError as e:   # serial.SerialException subclasses OSError
+            # EPERM here (and not ENOENT) means the node exists but the device
+            # cgroup denied the open. That is a container-config fault, not a
+            # wiring fault: no amount of chmod on the host will fix it.
             log(f"[serial] {PORT} not ready ({e}); retry in {RECONNECT_DELAY}s")
             time.sleep(RECONNECT_DELAY)
 
@@ -127,7 +163,7 @@ def on_connect(client, userdata, connect_flags, reason_code, properties):
         return
     userdata["connected"] = True
     log(f"[mqtt] connected to {BROKER_HOST}:{BROKER_PORT} "
-          f"(buffered={len(userdata['buf'])})")
+        f"(buffered={len(userdata['buf'])})")
     # QoS 1 + retain: state must arrive, and must be there for late subscribers.
     client.publish(TOPIC_STATUS, STATUS_ONLINE, qos=1, retain=True)
     log(f"[mqtt] {TOPIC_STATUS} online (retained)")
@@ -159,7 +195,10 @@ def make_mqtt_client(state: dict) -> mqtt.Client:
     client.will_set(TOPIC_STATUS, STATUS_LWT, qos=1, retain=True)
 
     # connect_async + loop_start defers the connect to paho's thread and retries,
-    # so a broker that's down at boot doesn't crash the gateway (symmetric with open_serial).
+    # so a broker that's down at boot doesn't crash the gateway (symmetric with
+    # open_serial). This matters more in a container: `restart: unless-stopped`
+    # will happily restart-loop a process that exits because the broker wasn't
+    # up yet, and a crash-loop is a worse signal than a quiet retry.
     client.connect_async(BROKER_HOST, BROKER_PORT, MQTT_KEEPALIVE)
     client.loop_start()
     log(f"[mqtt] connecting to {BROKER_HOST}:{BROKER_PORT} (keepalive {MQTT_KEEPALIVE}s)")
@@ -317,8 +356,8 @@ def main():
             now = time.monotonic()
             if now - last_stat >= STAT_INTERVAL:
                 log(f"[stat] depth={len(state['buf'])} pub={state['published']} "
-                      f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
-                      f"errs={state['parse_errors']} connected={state['connected']}")
+                    f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
+                    f"errs={state['parse_errors']} connected={state['connected']}")
                 last_stat = now
     finally:
         # Cleanup runs in IMPORTANCE order, and anything that can raise goes LAST.
@@ -329,6 +368,12 @@ def main():
         # from reason:shutdown to reason:lwt. A crash in the LOGGING path silently
         # rewrote the incident record. Logging is I/O; I/O fails; cleanup handlers
         # do their real work before they narrate it.
+        #
+        # This block is also on a CLOCK now. `docker stop` gives us
+        # stop_grace_period seconds before SIGKILL, which cannot be caught. Every
+        # bounded wait below (2.0s) must sum to comfortably less than that budget,
+        # or the container's own supervisor destroys the graceful shutdown it
+        # asked for.
         try:
             # A CLEAN disconnect suppresses the will -- the broker assumes we meant
             # to leave. So we must overwrite the retained status ourselves, or it
@@ -347,8 +392,11 @@ def main():
         # Cosmetics only, past this point. Nothing below can affect broker state.
         log(f"[mqtt] {TOPIC_STATUS} offline (retained)")
         # The buffer is memory-only: it survives a BROKER outage, not our own
-        # death. Durability across a gateway restart means a disk-backed queue
-        # (SQLite/WAL) -- deliberately out of scope, and worth saying out loud.
+        # death. Containerizing does not change that -- an image is not a volume,
+        # and `docker restart` throws the deque away exactly as Ctrl-C does.
+        # Durability across a gateway restart means a disk-backed queue
+        # (SQLite/WAL) on a mounted volume -- deliberately out of scope, and
+        # worth saying out loud.
         if state["buf"]:
             log(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
         log(f"[mqtt] disconnected -- pub={state['published']} "
@@ -357,6 +405,13 @@ def main():
 
 
 if __name__ == "__main__":
+    # Registered BEFORE main() so a `docker stop` issued one millisecond after
+    # container start still unwinds cleanly. As PID 1 we get no default handler:
+    # the kernel refuses to deliver a signal to PID 1 unless a handler exists,
+    # so without this line SIGTERM is dropped on the floor and docker SIGKILLs us
+    # after the grace period -- skipping the finally block and firing the will.
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
     try:
         main()
     except KeyboardInterrupt:
