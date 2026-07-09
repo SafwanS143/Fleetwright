@@ -238,11 +238,11 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
 - What a container actually is (namespaces + cgroups) and how it differs from a VM: shared kernel,
   isolated view of the system — not a full guest OS like a VM.
 
-  _(your answer here)_
+  A container is a running image (a snapshot of your program and it's environment and dependencies). It has properties like namespaces (controls what a process can see, like other processes, users, etc.) and cgroups (what a process can use, ie. device data). It's much more efficient than a VM since it shares the same OS and you allocate the resources that the container itself needs rather than a whole OS running on top of yours.
 
 - When you'd run a plain `systemd` service instead of a container.
 
-  _(your answer here)_
+  If you have a simple process that you want constantly run and handled by the OS of the Pi, then you'd run a systemd service. In our case, we had reads from other devices, which requires access to the /dev port on the Pi, which is better on a container.
 
 **Interview-critical tier:**
 
@@ -250,6 +250,6 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
   into the container explicitly (e.g. `--device`), because a container doesn't see host devices by
   default. `FLEET_SERIAL_PORT` env var selects which port the reader opens.
 
-  _(your answer here)_
+  A container doesn't see host machine services by default. They must be allowed to see said passthrough (/dev folder) by the cgroup and mounting the /dev folder. The serial port is also added to the env variables instead of passing on explicit file run commands, since it's now a docker container service and not a file being run manually. This is a better tradeoff for this scale of project to allow the container to see the device driver regardless of when the plug was inserted
 
 <!-- Phases 3-7 stubs added as you reach them. -->
