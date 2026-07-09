@@ -196,21 +196,25 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
   - QoS 2 — exactly once (four-way handshake, slowest).
     Say which you picked for telemetry and the tradeoff behind it.
 
-  _(your answer here)_
+  I picked QoS 0 for telemetry. There are several reasons for this, first being that telemetry fires at 10Hz, meaning ACKs and four way would quickly clutter the broker and Pi connection. Resending messages hundreds of milliseconds afterwards has no benefit, since the temperature at that instant has no significance for a 10Hz stream. We have a seq # that we rely on for completeness, and the SLO is for liveness, not completeness (missing a tenth of a second doesn't matter for temp/accel etc.)
 
 - Retained messages: the broker keeps the last message on a topic so a _new_ subscriber gets current
   status immediately instead of waiting for the next publish.
 
-  _(your answer here)_
+  A retained message is a single message that is saved on the broker level, one for each topic. Subscribers immediately get the retained message upon subscribing, allowing for offline statusses to show. This is really helpful for when the gateway (Pi) publishing connecting is degraded.
 
 - Last-Will-and-Testament: a message the broker publishes on the gateway's behalf if the connection
   drops uncleanly — so a dead gateway marks its device offline without any live code running.
 
-  _(your answer here)_
+  The LWT is a message that the broker publishes when it detects a degraded gateway that's been stopped abruptly. It lets the subscribers know that there's an issue with the gateway instead of just the gateway not sending data. It is a retained message on the /status topic and for abrupt internet disconnections and program ungraceful stops, it waits for 1.5 \* keepalive time before it published the LWT message. For program kills, it sends the message immediately.
 
 - Why MQTT for fleet telemetry instead of plain HTTP.
 
-  _(your answer here)_
+  MQTT allows for decoupling between the publishers and subscribers.
+
+  Plain HTTP means you do 10 POST and GET per second, constantly polling, which is costly and not nearly as efficient as real time streaming.
+
+  HTTP is client initiated, which requires the endpoint's ip/NAT, which gets messy. MQTT's connection comes with build in features like LWT, retained and QoS, which makes it a much better choice.
 
 ## Chunk 13 — Ring buffer / store-and-forward
 
