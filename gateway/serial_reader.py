@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gateway/serial_reader.py  --  Chunk 12 (QoS, retained status, last-will)
+gateway/serial_reader.py  --  Chunk 13 (bounded ring buffer / store-and-forward)
 
 Reads NDJSON telemetry from the Nucleo over the ST-LINK virtual COM port,
 buffers raw bytes until a newline, parses each complete line as JSON, and
@@ -8,12 +8,17 @@ publishes it to the Mosquitto broker. Publishes a retained connection-state
 message on connect, and registers a Last-Will so an ungraceful death marks
 the gateway offline without any code of ours running.
 
+Chunk 13: telemetry no longer publishes directly. It goes into a bounded ring
+buffer, and a rate-limited drain is the ONLY publisher. A broker outage now
+costs latency instead of data.
+
 Run on the Pi:  python3 gateway/serial_reader.py   (Ctrl-C to stop)
 """
 import json
 import time
 import serial
 import os
+from collections import deque
 import paho.mqtt.client as mqtt
 
 # Prefer the stable by-id symlink over /dev/ttyACM0 -- ACM numbering can change
@@ -50,6 +55,28 @@ STATUS_ONLINE   = json.dumps({"id": DEVICE_ID, "state": "online"})
 STATUS_LWT      = json.dumps({"id": DEVICE_ID, "state": "offline", "reason": "lwt"})
 STATUS_SHUTDOWN = json.dumps({"id": DEVICE_ID, "state": "offline", "reason": "shutdown"})
 
+# --- Chunk 13: store-and-forward ---------------------------------------------
+# BOUNDED, because an unbounded queue does not prevent loss -- it converts a
+# small bounded loss into an OOM kill on a 2GB Pi, which loses the queue AND the
+# gateway. Bounded means the loss is capped, counted, and logged. That is
+# backpressure: the Nucleo cannot be told to slow down, so we decide in advance
+# what we sacrifice.
+#
+# Sizing: 10 Hz x ~230 B/frame. 6000 frames = 10 min of outage = ~1.4 MB
+# resident. Sized to the outage class we intend to survive (broker restart,
+# network blip) -- NOT to an all-day outage, whose backlog Prometheus could not
+# use anyway (it stamps samples at scrape time, so a flush does not backfill).
+BUFFER_MAXLEN = int(os.environ.get("FLEET_BUFFER_MAXLEN", "6000"))
+
+# Max frames published per pass through the read loop. A greedy flush would not
+# call ser.read() while draining, the kernel's serial input buffer would overrun,
+# and we would lose LIVE data while frantically saving DEAD data. At ~9 loop
+# passes/s this drains ~450 msg/s against a 10 msg/s ingest: the backlog clears
+# ~45x faster than it fills, and the reader is serviced every pass.
+DRAIN_BATCH = int(os.environ.get("FLEET_DRAIN_BATCH", "50"))
+
+STAT_INTERVAL = 10.0           # seconds between [stat] lines
+
 
 def open_serial() -> serial.Serial:
     """Block until the port opens, then return the handle. Retries forever so
@@ -77,19 +104,33 @@ def on_connect(client, userdata, connect_flags, reason_code, properties):
     if reason_code != 0:
         print(f"[mqtt] connect failed: {reason_code}")
         return
-    print(f"[mqtt] connected to {BROKER_HOST}:{BROKER_PORT}")
+    userdata["connected"] = True
+    print(f"[mqtt] connected to {BROKER_HOST}:{BROKER_PORT} "
+          f"(buffered={len(userdata['buf'])})")
     # QoS 1 + retain: state must arrive, and must be there for late subscribers.
     client.publish(TOPIC_STATUS, STATUS_ONLINE, qos=1, retain=True)
     print(f"[mqtt] {TOPIC_STATUS} online (retained)")
 
 
-def make_mqtt_client() -> mqtt.Client:
+def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
+    """The only place `connected` goes False. Everything downstream (drain,
+    heartbeat) reads this flag rather than asking paho, so there is exactly one
+    source of truth for link state."""
+    userdata["connected"] = False
+    print(f"[mqtt] disconnected ({reason_code}); buffering telemetry")
+
+
+def make_mqtt_client(state: dict) -> mqtt.Client:
     """Connect to the broker and start a background network thread.
     loop_start() runs paho's I/O on its own thread so our serial read loop
     stays in control -- loop_forever() would block and starve the reader.
-    CallbackAPIVersion.VERSION2 is mandatory in paho-mqtt 2.x."""
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    CallbackAPIVersion.VERSION2 is mandatory in paho-mqtt 2.x.
+
+    `state` is handed to paho as userdata so the callbacks can flip `connected`
+    and read the buffer depth without a module-level global."""
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata=state)
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
 
     # The will travels INSIDE the CONNECT packet, so it must be registered
     # before any connect call. Retained, because a subscriber that arrives
@@ -116,35 +157,116 @@ def extract_lines(buf: bytearray):
             yield line
 
 
-def handle_line(raw: bytes, client: mqtt.Client):
-    """Parse one complete line as JSON, then publish it to MQTT. A malformed
-    line is logged and dropped BEFORE any publish -- only valid telemetry
-    reaches the broker, so parse/framing failures stay upstream of MQTT and
-    never leave the gateway. A single corrupt frame must not take it down."""
+def enqueue(state: dict, payload: str):
+    """Append telemetry to the ring buffer, counting evictions.
+
+    deque(maxlen=N) evicts the oldest element SILENTLY, and a silent drop is the
+    exact failure this chunk exists to fix. So the eviction is counted before the
+    append, or the loss is invisible.
+
+    Drop-oldest is correct for telemetry: the newest sample is the most valuable
+    one, because the dashboard and the anomaly detector both care about now. An
+    audit log or a ledger would drop the NEWEST instead and refuse the write.
+    """
+    buf = state["buf"]
+    if len(buf) == buf.maxlen:
+        state["dropped"] += 1
+        if state["dropped"] == 1 or state["dropped"] % 500 == 0:
+            print(f"[buffer] FULL -- evicted {state['dropped']} oldest frames")
+    buf.append(payload)
+
+
+def drain(client: mqtt.Client, state: dict) -> int:
+    """The ONLY publisher of telemetry. Pops FIFO, up to DRAIN_BATCH per pass.
+
+    A frame is popped only AFTER paho accepts it; on failure it stays at the head
+    and is retried next pass. FIFO + head-retry means the stream is never
+    reordered, so `seq` stays monotonic and the consumer's gap detection keeps
+    working across a flush.
+
+    Note what MQTT_ERR_SUCCESS actually means at QoS 0: paho accepted the frame
+    into its socket buffer. NOT that the broker received it. This buffer covers
+    DISCONNECTED loss; in-flight loss is covered by seq-gap detection downstream.
+    """
+    buf = state["buf"]
+    # Suppress the per-frame print while clearing a backlog -- 6000 lines to a
+    # remote stdout would itself starve the read loop.
+    quiet = len(buf) > DRAIN_BATCH
+    sent = 0
+    while buf and sent < DRAIN_BATCH and state["connected"]:
+        info = client.publish(TOPIC_TELEMETRY, buf[0], qos=0, retain=False)
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            break                         # leave it at the head; retry next pass
+        if not quiet:
+            print(f"[mqtt] {TOPIC_TELEMETRY} {buf[0]}")
+        buf.popleft()
+        sent += 1
+        state["published"] += 1
+    if quiet and sent:
+        print(f"[drain] flushed {sent}, {len(buf)} remaining")
+    return sent
+
+
+def publish_heartbeat(client: mqtt.Client, state: dict, payload: str):
+    """Heartbeats are NEVER buffered.
+
+    The freshness SLI is `now - last_received`, measured downstream. Replaying a
+    stale heartbeat after an outage would report the device as fresh across a
+    window in which the control plane demonstrably could not see it -- the system
+    would manufacture a lie about its own availability. A heartbeat is only
+    meaningful at the instant it arrives; if it cannot be delivered now, destroy it.
+
+    Which is also why it is QoS 0, not the QoS 1 Chunk 12 first gave it: paho
+    QUEUES QoS>0 publishes while disconnected and replays them on reconnect --
+    exactly the replay this function exists to prevent. A liveness token needs
+    the QoS level that does not retransmit.
+    """
+    if not state["connected"]:
+        state["hb_dropped"] += 1
+        return
+    client.publish(TOPIC_HEARTBEAT, payload, qos=0, retain=False)
+    print(f"[mqtt] {TOPIC_HEARTBEAT} {payload}")
+
+
+def handle_line(raw: bytes, client: mqtt.Client, state: dict):
+    """Parse one complete line as JSON, then route it. A malformed line is logged
+    and dropped BEFORE it reaches the buffer or MQTT -- only valid telemetry
+    enters the pipeline, so parse/framing failures stay upstream and never leave
+    the gateway. A single corrupt frame must not take it down."""
     try:
         msg = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        state["parse_errors"] += 1
         print(f"[parse] skipping bad line: {raw!r}")
         return
+
+    payload = json.dumps(msg)
 
     # /status is reserved for retained CONNECTION state (online/offline).
     # The firmware heartbeat is a different fault domain -- device liveness,
     # not link liveness -- so it gets its own topic. Publishing it to /status
     # would clobber the retained will marker.
-    topic = TOPIC_HEARTBEAT if msg.get("type") == "heartbeat" else TOPIC_TELEMETRY
-
-    # QoS 0: telemetry is a sample of a continuous signal. A lost sample is a
-    # gap I can DETECT via seq#, and a retransmitted 400ms-old accel reading is
-    # worthless -- freshness is the SLI, not completeness. QoS 1 would also
-    # duplicate messages and corrupt the Prometheus counters in Chunk 15.
-    client.publish(topic, json.dumps(msg), qos=0, retain=False)
-    print(f"[mqtt] {topic} {msg}")
+    if msg.get("type") == "heartbeat":
+        publish_heartbeat(client, state, payload)   # bypasses the buffer, by design
+    else:
+        enqueue(state, payload)                     # the buffer is the only publisher
 
 
 def main():
+    state = {
+        "buf": deque(maxlen=BUFFER_MAXLEN),
+        "connected": False,
+        "dropped": 0,        # telemetry frames evicted by a full buffer
+        "hb_dropped": 0,     # heartbeats destroyed while disconnected (by design, not a bug)
+        "published": 0,
+        "parse_errors": 0,
+    }
+
     ser = open_serial()
-    client = make_mqtt_client()
+    client = make_mqtt_client(state)
     buf = bytearray()
+    last_stat = time.monotonic()
+
     try:
         while True:
             try:
@@ -159,15 +281,25 @@ def main():
                 ser = open_serial()
                 continue
 
-            if not chunk:
-                continue                  # timeout, no bytes this round
+            if chunk:
+                buf.extend(chunk)
+                if len(buf) > MAX_LINE and b"\n" not in buf:
+                    print(f"[serial] no newline in {len(buf)}B; framing fault, dropping buffer")
+                    buf.clear()
+                for line in extract_lines(buf):
+                    handle_line(line, client, state)
 
-            buf.extend(chunk)
-            if len(buf) > MAX_LINE and b"\n" not in buf:
-                print(f"[serial] no newline in {len(buf)}B; framing fault, dropping buffer")
-                buf.clear()
-            for line in extract_lines(buf):
-                handle_line(line, client)
+            # Runs every pass, INCLUDING the read-timeout path -- a backlog must
+            # keep flushing even when the Nucleo has gone quiet. No-ops when the
+            # queue is empty or the link is down.
+            drain(client, state)
+
+            now = time.monotonic()
+            if now - last_stat >= STAT_INTERVAL:
+                print(f"[stat] depth={len(state['buf'])} pub={state['published']} "
+                      f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
+                      f"errs={state['parse_errors']} connected={state['connected']}")
+                last_stat = now
     finally:
         # A CLEAN disconnect suppresses the will -- the broker assumes we meant
         # to leave. So we must overwrite the retained status ourselves, or it
@@ -178,9 +310,16 @@ def main():
         except Exception:
             pass
         print(f"[mqtt] {TOPIC_STATUS} offline (retained)")
+        # The buffer is memory-only: it survives a BROKER outage, not our own
+        # death. Durability across a gateway restart means a disk-backed queue
+        # (SQLite/WAL) -- deliberately out of scope, and worth saying out loud.
+        if state["buf"]:
+            print(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
         client.loop_stop()
         client.disconnect()
-        print("[mqtt] disconnected")
+        print(f"[mqtt] disconnected -- pub={state['published']} "
+              f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
+              f"errs={state['parse_errors']}")
 
 
 if __name__ == "__main__":
