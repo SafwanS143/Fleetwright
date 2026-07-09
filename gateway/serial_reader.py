@@ -18,8 +18,29 @@ import json
 import time
 import serial
 import os
+import sys
 from collections import deque
 import paho.mqtt.client as mqtt
+
+
+def log(*args, **kwargs):
+    """Every line of output goes through here, because writing to stdout can FAIL.
+
+    If the process is piped (`... | grep`) and the reader dies -- Ctrl-C signals
+    the whole foreground process group, so grep dies first -- the next write
+    raises BrokenPipeError. A bare print() therefore turns a routine shutdown into
+    an exception, from wherever it happens to be called.
+
+    That is not hypothetical here: paho invokes on_disconnect SYNCHRONOUSLY from
+    inside client.disconnect(), so a print in a callback can abort the disconnect
+    mid-packet. No DISCONNECT reaches the broker, the will fires, and a planned
+    shutdown is recorded as an ungraceful death. Logging must never be able to
+    change the system's observable state.
+    """
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        pass
 
 # Prefer the stable by-id symlink over /dev/ttyACM0 -- ACM numbering can change
 # on replug, the by-id path does not. Find yours with:
@@ -89,10 +110,10 @@ def open_serial() -> serial.Serial:
             # (no opening '{'), which would fail to parse. Flushing chooses
             # freshness over a stale backlog -- ties to the freshness SLI.
             ser.reset_input_buffer()
-            print(f"[serial] connected {PORT} @ {BAUD}")
+            log(f"[serial] connected {PORT} @ {BAUD}")
             return ser
         except OSError as e:   # serial.SerialException subclasses OSError
-            print(f"[serial] {PORT} not ready ({e}); retry in {RECONNECT_DELAY}s")
+            log(f"[serial] {PORT} not ready ({e}); retry in {RECONNECT_DELAY}s")
             time.sleep(RECONNECT_DELAY)
 
 
@@ -102,14 +123,14 @@ def on_connect(client, userdata, connect_flags, reason_code, properties):
     after connect(): a gateway that reconnects after a network blip must restore
     its own status, or the broker keeps serving the retained 'offline' will."""
     if reason_code != 0:
-        print(f"[mqtt] connect failed: {reason_code}")
+        log(f"[mqtt] connect failed: {reason_code}")
         return
     userdata["connected"] = True
-    print(f"[mqtt] connected to {BROKER_HOST}:{BROKER_PORT} "
+    log(f"[mqtt] connected to {BROKER_HOST}:{BROKER_PORT} "
           f"(buffered={len(userdata['buf'])})")
     # QoS 1 + retain: state must arrive, and must be there for late subscribers.
     client.publish(TOPIC_STATUS, STATUS_ONLINE, qos=1, retain=True)
-    print(f"[mqtt] {TOPIC_STATUS} online (retained)")
+    log(f"[mqtt] {TOPIC_STATUS} online (retained)")
 
 
 def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
@@ -117,7 +138,7 @@ def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
     heartbeat) reads this flag rather than asking paho, so there is exactly one
     source of truth for link state."""
     userdata["connected"] = False
-    print(f"[mqtt] disconnected ({reason_code}); buffering telemetry")
+    log(f"[mqtt] disconnected ({reason_code}); buffering telemetry")
 
 
 def make_mqtt_client(state: dict) -> mqtt.Client:
@@ -141,7 +162,7 @@ def make_mqtt_client(state: dict) -> mqtt.Client:
     # so a broker that's down at boot doesn't crash the gateway (symmetric with open_serial).
     client.connect_async(BROKER_HOST, BROKER_PORT, MQTT_KEEPALIVE)
     client.loop_start()
-    print(f"[mqtt] connecting to {BROKER_HOST}:{BROKER_PORT} (keepalive {MQTT_KEEPALIVE}s)")
+    log(f"[mqtt] connecting to {BROKER_HOST}:{BROKER_PORT} (keepalive {MQTT_KEEPALIVE}s)")
     return client
 
 
@@ -172,7 +193,7 @@ def enqueue(state: dict, payload: str):
     if len(buf) == buf.maxlen:
         state["dropped"] += 1
         if state["dropped"] == 1 or state["dropped"] % 500 == 0:
-            print(f"[buffer] FULL -- evicted {state['dropped']} oldest frames")
+            log(f"[buffer] FULL -- evicted {state['dropped']} oldest frames")
     buf.append(payload)
 
 
@@ -202,7 +223,7 @@ def drain(client: mqtt.Client, state: dict) -> int:
         sent += 1
         state["published"] += 1
     if backlog:
-        print(f"[drain] flushed {sent}, {len(buf)} remaining")
+        log(f"[drain] flushed {sent}, {len(buf)} remaining")
     return sent
 
 
@@ -224,7 +245,7 @@ def publish_heartbeat(client: mqtt.Client, state: dict, payload: str):
         state["hb_dropped"] += 1
         return
     client.publish(TOPIC_HEARTBEAT, payload, qos=0, retain=False)
-    print(f"[mqtt] {TOPIC_HEARTBEAT} {payload}")
+    log(f"[mqtt] {TOPIC_HEARTBEAT} {payload}")
 
 
 def handle_line(raw: bytes, client: mqtt.Client, state: dict):
@@ -236,7 +257,7 @@ def handle_line(raw: bytes, client: mqtt.Client, state: dict):
         msg = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
         state["parse_errors"] += 1
-        print(f"[parse] skipping bad line: {raw!r}")
+        log(f"[parse] skipping bad line: {raw!r}")
         return
 
     payload = json.dumps(msg)
@@ -271,7 +292,7 @@ def main():
             try:
                 chunk = ser.read(256)     # up to 256 bytes, or fewer after timeout
             except OSError as e:          # serial.SerialException subclasses OSError
-                print(f"[serial] lost device ({e}); reconnecting")
+                log(f"[serial] lost device ({e}); reconnecting")
                 try:
                     ser.close()
                 except Exception:
@@ -283,7 +304,7 @@ def main():
             if chunk:
                 buf.extend(chunk)
                 if len(buf) > MAX_LINE and b"\n" not in buf:
-                    print(f"[serial] no newline in {len(buf)}B; framing fault, dropping buffer")
+                    log(f"[serial] no newline in {len(buf)}B; framing fault, dropping buffer")
                     buf.clear()
                 for line in extract_lines(buf):
                     handle_line(line, client, state)
@@ -295,7 +316,7 @@ def main():
 
             now = time.monotonic()
             if now - last_stat >= STAT_INTERVAL:
-                print(f"[stat] depth={len(state['buf'])} pub={state['published']} "
+                log(f"[stat] depth={len(state['buf'])} pub={state['published']} "
                       f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
                       f"errs={state['parse_errors']} connected={state['connected']}")
                 last_stat = now
@@ -324,25 +345,28 @@ def main():
             pass
 
         # Cosmetics only, past this point. Nothing below can affect broker state.
-        try:
-            print(f"[mqtt] {TOPIC_STATUS} offline (retained)")
-            # The buffer is memory-only: it survives a BROKER outage, not our own
-            # death. Durability across a gateway restart means a disk-backed queue
-            # (SQLite/WAL) -- deliberately out of scope, and worth saying out loud.
-            if state["buf"]:
-                print(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
-            print(f"[mqtt] disconnected -- pub={state['published']} "
-                  f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
-                  f"errs={state['parse_errors']}")
-        except BrokenPipeError:
-            pass                     # stdout's reader is gone; the state above is committed
+        log(f"[mqtt] {TOPIC_STATUS} offline (retained)")
+        # The buffer is memory-only: it survives a BROKER outage, not our own
+        # death. Durability across a gateway restart means a disk-backed queue
+        # (SQLite/WAL) -- deliberately out of scope, and worth saying out loud.
+        if state["buf"]:
+            log(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
+        log(f"[mqtt] disconnected -- pub={state['published']} "
+            f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
+            f"errs={state['parse_errors']}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
+        log("\n[serial] stopped")
+    finally:
+        # CPython flushes stdout on interpreter exit, AFTER our code has run. If
+        # the pipe is dead that flush raises where nothing can catch it, and the
+        # process exits with "Exception ignored" noise. Point the fd at /dev/null
+        # so the final flush has somewhere harmless to go.
         try:
-            print("\n[serial] stopped")
+            sys.stdout.flush()
         except BrokenPipeError:
-            pass
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
