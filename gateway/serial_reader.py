@@ -123,7 +123,7 @@ def handle_line(raw: bytes, client: mqtt.Client):
     never leave the gateway. A single corrupt frame must not take it down."""
     try:
         msg = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         print(f"[parse] skipping bad line: {raw!r}")
         return
 
