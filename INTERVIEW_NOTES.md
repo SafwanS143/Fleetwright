@@ -224,12 +224,12 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
   broker is unreachable, telemetry is buffered locally and flushed on reconnect so nothing is lost up
   to buffer size.
 
-  _(your answer here)_
+  When the gateway between the Pi and the broker drops, the messages sent to the broker will return an MQTT error. When this happens, the messages are thrown into our ring buffer, which is bounded and stores the data until the connection is regained, in which it will publish data at 500 messages/sec, while also parsing the incoming 10/sec
 
 - Why _bounded_: an unbounded buffer would grow until the 2GB Pi runs out of memory during a long
   outage. A bounded ring buffer applies backpressure / drops oldest — memory safety over completeness.
 
-  _(your answer here)_
+  If it was unbounded, a few hours of shortage would kill the RAM of the 2GB Pi. We keep it bounded to 6000 messages (5 mins), which is good enough for minor breakdowns which would require an SSH into the Pi to restart musquitto. Once max capacity of the buffer is reached, it starts removing the oldest (least important) messages first, hence called a ring buffer.
 
 ## Chunk 14 — Containerize the gateway
 

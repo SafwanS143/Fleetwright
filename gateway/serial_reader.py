@@ -189,20 +189,19 @@ def drain(client: mqtt.Client, state: dict) -> int:
     DISCONNECTED loss; in-flight loss is covered by seq-gap detection downstream.
     """
     buf = state["buf"]
-    # Suppress the per-frame print while clearing a backlog -- 6000 lines to a
-    # remote stdout would itself starve the read loop.
-    quiet = len(buf) > DRAIN_BATCH
+    # No per-frame print. Logging every message at 10 Hz buries the [stat] line,
+    # fills the disk, and -- while clearing a 6000-frame backlog to a remote
+    # stdout -- would itself starve the read loop. Only report when catching up.
+    backlog = len(buf) > DRAIN_BATCH
     sent = 0
     while buf and sent < DRAIN_BATCH and state["connected"]:
         info = client.publish(TOPIC_TELEMETRY, buf[0], qos=0, retain=False)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             break                         # leave it at the head; retry next pass
-        if not quiet:
-            print(f"[mqtt] {TOPIC_TELEMETRY} {buf[0]}")
         buf.popleft()
         sent += 1
         state["published"] += 1
-    if quiet and sent:
+    if backlog:
         print(f"[drain] flushed {sent}, {len(buf)} remaining")
     return sent
 
@@ -301,29 +300,49 @@ def main():
                       f"errs={state['parse_errors']} connected={state['connected']}")
                 last_stat = now
     finally:
-        # A CLEAN disconnect suppresses the will -- the broker assumes we meant
-        # to leave. So we must overwrite the retained status ourselves, or it
-        # says 'online' forever after a graceful Ctrl-C.
-        info = client.publish(TOPIC_STATUS, STATUS_SHUTDOWN, qos=1, retain=True)
+        # Cleanup runs in IMPORTANCE order, and anything that can raise goes LAST.
+        # Learned the hard way: a print() into a dead pipe (`| grep`, killed by the
+        # same Ctrl-C) raised BrokenPipeError here and skipped disconnect(). No
+        # DISCONNECT packet was sent, so the broker treated a planned shutdown as
+        # an ungraceful death and fired the will -- the retained status flipped
+        # from reason:shutdown to reason:lwt. A crash in the LOGGING path silently
+        # rewrote the incident record. Logging is I/O; I/O fails; cleanup handlers
+        # do their real work before they narrate it.
         try:
+            # A CLEAN disconnect suppresses the will -- the broker assumes we meant
+            # to leave. So we must overwrite the retained status ourselves, or it
+            # says 'online' forever after a graceful Ctrl-C.
+            info = client.publish(TOPIC_STATUS, STATUS_SHUTDOWN, qos=1, retain=True)
             info.wait_for_publish(timeout=2.0)   # network thread is still alive here
         except Exception:
             pass
-        print(f"[mqtt] {TOPIC_STATUS} offline (retained)")
-        # The buffer is memory-only: it survives a BROKER outage, not our own
-        # death. Durability across a gateway restart means a disk-backed queue
-        # (SQLite/WAL) -- deliberately out of scope, and worth saying out loud.
-        if state["buf"]:
-            print(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
         client.loop_stop()
-        client.disconnect()
-        print(f"[mqtt] disconnected -- pub={state['published']} "
-              f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
-              f"errs={state['parse_errors']}")
+        client.disconnect()          # sends DISCONNECT -- this is what suppresses the will
+        try:
+            ser.close()              # an unclosed port is "resource busy" on next start
+        except Exception:
+            pass
+
+        # Cosmetics only, past this point. Nothing below can affect broker state.
+        try:
+            print(f"[mqtt] {TOPIC_STATUS} offline (retained)")
+            # The buffer is memory-only: it survives a BROKER outage, not our own
+            # death. Durability across a gateway restart means a disk-backed queue
+            # (SQLite/WAL) -- deliberately out of scope, and worth saying out loud.
+            if state["buf"]:
+                print(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
+            print(f"[mqtt] disconnected -- pub={state['published']} "
+                  f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
+                  f"errs={state['parse_errors']}")
+        except BrokenPipeError:
+            pass                     # stdout's reader is gone; the state above is committed
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n[serial] stopped")
+        try:
+            print("\n[serial] stopped")
+        except BrokenPipeError:
+            pass
