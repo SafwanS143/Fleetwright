@@ -14,7 +14,7 @@ services:
     stop_grace_period: 15s
 
     # Host's live devtmpfs, not `devices:` — udev's by-id symlinks only exist
-    # here, and a `devices:` node is frozen at container start (breaks replug).
+    # here, and a `devices:` node is frozen at container start (breaks replug)
     volumes:
       - /dev:/dev
 
