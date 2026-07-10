@@ -252,4 +252,102 @@ container. Interview weight sits on MQTT (pub/sub, QoS, retained, LWT) and store
 
   A container doesn't see host machine services by default. They must be allowed to see said passthrough (/dev folder) by the cgroup and mounting the /dev folder. The serial port is also added to the env variables instead of passing on explicit file run commands, since it's now a docker container service and not a file being run manually. This is a better tradeoff for this scale of project to allow the container to see the device driver regardless of when the plug was inserted
 
-<!-- Phases 3-7 stubs added as you reach them. -->
+---
+
+# Phase 3 — Cloud observe (Prometheus + Grafana)
+
+_Mostly reused from the SRE Monitor, so the build is fast — the weight is entirely on defend.
+Interviewers probe whether I actually understand the pieces I reused: metric types, the pull model,
+`rate()`, histogram quantiles, and the SLI/SLO/error-budget vocabulary. This is where "deployed
+Prometheus" has to become "can reason about it."_
+
+**Tier 1 — Interview-critical, full depth:**
+
+1. Metric types + the pull model — Chunk 15 (counter vs gauge vs histogram; why Prometheus scrapes instead of receiving pushes).
+2. `rate()` on a counter — Chunk 16 (why a raw counter is meaningless without it).
+3. p95 out of a histogram — Chunk 17 (buckets → quantile estimate).
+4. SLI / SLO / SLA + error budgets — Chunk 18 (how each number was chosen; symptom-based alerting).
+5. Four golden signals mapping — Chunk 19 (which channel covers which signal, and the honest gap).
+
+## Chunk 15 — MQTT→Prometheus bridge
+
+**Interview-critical tier:**
+
+- Counter vs gauge vs histogram, and which you used where and why:
+  - Counter — monotonically increasing (messages, errors); only goes up (or resets to 0).
+  - Gauge — a value that goes up and down (last temp, last-seen age).
+  - Histogram — samples bucketed into ranges (inter-message latency), the basis for quantiles.
+
+  _(your answer here)_
+
+- Why Prometheus **pulls (scrapes)** `/metrics` instead of receiving pushes, and the tradeoff.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- What an exporter is: a process that exposes metrics on `/metrics` in the format Prometheus scrapes.
+
+  _(your answer here)_
+
+## Chunk 16 — Prometheus + Grafana via Docker Compose
+
+**One-liner tier:**
+
+- The scrape config and scrape interval: how Prometheus is told what target to hit and how often.
+
+  _(your answer here)_
+
+**Interview-critical tier:**
+
+- What `rate()` does and why you wrap a counter in it: a raw counter's absolute value is meaningless;
+  `rate()` gives the per-second increase over a window, which is the thing you actually graph/alert on.
+
+  _(your answer here)_
+
+## Chunk 17 — Per-device dashboard
+
+**Interview-critical tier:**
+
+- How you get **p95 out of a histogram** (buckets → quantile estimate): `histogram_quantile()` over the
+  bucket counts estimates the value below which 95% of samples fall — an interpolation across buckets,
+  not an exact percentile.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- What freshness looks like as a metric: `now − last-seen` (time since the last message from a device).
+
+  _(your answer here)_
+
+## Chunk 18 — SLIs / SLOs / error budgets
+
+**Interview-critical tier:**
+
+- SLI vs SLO vs SLA: the measured indicator, the target you set for it, the contract with consequences.
+
+  _(your answer here)_
+
+- How you chose each number (freshness / availability / error rate) — a reason, not a vibe.
+
+  _(your answer here)_
+
+- What an **error budget** is and what it lets you _do_ (ship vs. freeze).
+
+  _(your answer here)_
+
+- Why you alert on **symptoms / SLO burn**, not every raw cause.
+
+  _(your answer here)_
+
+## Chunk 19 — Four golden signals mapping
+
+**Interview-critical tier:**
+
+- Which telemetry channel covers which signal (latency / traffic / errors / saturation), and which
+  signal you're **not** covering and why — be honest about the gap.
+
+  _(your answer here)_
+
+<!-- Phases 4-7 stubs added as you reach them. -->
