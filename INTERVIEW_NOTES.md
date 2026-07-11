@@ -278,17 +278,21 @@ Prometheus" has to become "can reason about it."_
   - Gauge — a value that goes up and down (last temp, last-seen age).
   - Histogram — samples bucketed into ranges (inter-message latency), the basis for quantiles.
 
-  _(your answer here)_
+  A counter is just a number that gets incremented or reset to 0. We used it for the total messages and errors, since on a restart, we'd want those values to go back to 0. We also wouldn't graph these values, only their most recent value has meaning
+
+  A guage is a value that goes up and down. This is something you would graph, like legit all of our sensor data. This is because going up and down needs to be permitted.
+
+  A Histogram is a special metric type that splits data into buckets and counts numbers for each. We use this to actually find out p95 latency of our messages later on.
 
 - Why Prometheus **pulls (scrapes)** `/metrics` instead of receiving pushes, and the tradeoff.
 
-  _(your answer here)_
+  Making Prometheus pull instead of receiving pushes gives us a target health signal and removes the need for the target to push time, since Prometheus scrapes on it's own time. The only problems are that Prometheus needs to be able to reach the target (NATs and firewalls can get in the way).
 
 **One-liner tier:**
 
 - What an exporter is: a process that exposes metrics on `/metrics` in the format Prometheus scrapes.
 
-  _(your answer here)_
+  An exporter is a process that converts the raw metrics into a new /metrics endpoint that Prometheus updates every specified n seconds.
 
 ## Chunk 16 — Prometheus + Grafana via Docker Compose
 
