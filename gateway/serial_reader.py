@@ -2,11 +2,9 @@
 """
 gateway/serial_reader.py  --  Chunk 14 (containerized gateway)
 
-Reads NDJSON telemetry from the Nucleo over the ST-LINK virtual COM port,
-buffers raw bytes until a newline, parses each complete line as JSON, and
-publishes it to the Mosquitto broker. Publishes a retained connection-state
-message on connect, and registers a Last-Will so an ungraceful death marks
-the gateway offline without any code of ours running.
+Reads NDJSON telemetry from the Nucleo over serial, buffers to newline, parses each
+line as JSON, and publishes to Mosquitto. Publishes a retained connection-state
+message on connect and registers a Last-Will so an ungraceful death marks us offline.
 
 Run on the Pi:  docker compose up -d   (or python3 gateway/serial_reader.py)
 """
@@ -21,26 +19,10 @@ import paho.mqtt.client as mqtt
 
 
 def log(*args, **kwargs):
-    """Every line of output goes through here, because writing to stdout can FAIL.
-
-    If the process is piped (`... | grep`) and the reader dies -- Ctrl-C signals
-    the whole foreground process group, so grep dies first -- the next write
-    raises BrokenPipeError. A bare print() therefore turns a routine shutdown into
-    an exception, from wherever it happens to be called.
-
-    That is not hypothetical here: paho invokes on_disconnect SYNCHRONOUSLY from
-    inside client.disconnect(), so a print in a callback can abort the disconnect
-    mid-packet. No DISCONNECT reaches the broker, the will fires, and a planned
-    shutdown is recorded as an ungraceful death. Logging must never be able to
-    change the system's observable state.
-
-    Under Docker, stdout is a PIPE to the daemon, not a tty. CPython picks its
-    buffering mode from isatty(), so stdout goes fully-buffered at 8 KB and
-    `docker logs -f` shows nothing for ~15 minutes on a 90-byte/10s log rate.
-    PYTHONUNBUFFERED=1 in the Dockerfile is what keeps this function honest --
-    same lesson as the BrokenPipe fix: the observability path must not
-    misrepresent the state it exists to report.
-    """
+    """Wraps print() because stdout writes can fail. When piped (`| grep`) and the
+    reader dies, the next write raises BrokenPipeError; inside a paho callback that
+    would abort disconnect() mid-packet, fire the will, and log a planned shutdown as
+    an ungraceful death. (Under Docker, PYTHONUNBUFFERED=1 keeps `docker logs` live.)"""
     try:
         print(*args, **kwargs)
     except BrokenPipeError:
@@ -48,51 +30,34 @@ def log(*args, **kwargs):
 
 
 def _on_sigterm(signum, frame):
-    """Convert SIGTERM into the same exception Ctrl-C raises.
-
-    Raised from the main thread between bytecodes; PEP 475 means a blocking
-    ser.read() or time.sleep() is interrupted, the handler runs, and the
-    exception propagates out of main()'s try -- so the finally block executes and
-    the retained status is correctly written as reason:shutdown.
-    """
+    """Turn SIGTERM into KeyboardInterrupt so the finally block runs (writes
+    reason:shutdown). PEP 475 interrupts a blocking ser.read()/sleep to deliver it."""
     raise KeyboardInterrupt
 
 
-# Prefer the stable by-id symlink over /dev/ttyACM0 -- ACM numbering can change
-# on replug, the by-id path does not. Find yours with:
-#   ls -l /dev/serial/by-id/
-# Inside the container this path only exists because /dev is bind-mounted from
-# the host: the by-id symlinks are created by udev, which runs on the host and
-# knows nothing about our container. `--device` would have given us a frozen
-# (major,minor) node instead, and a replug that renumbered to ttyACM1 would
-# leave us retrying a node that can never open again.
+# Prefer the stable by-id symlink over /dev/ttyACM0 (ACM numbering changes on replug).
+# Works in-container only because /dev is bind-mounted from the host, where udev makes
+# the symlink; `--device` would freeze the (major,minor) node and die on a replug.
 PORT = os.environ.get("FLEET_SERIAL_PORT", "/dev/ttyACM0")
 BAUD = 115200
 READ_TIMEOUT = 1.0             # seconds; read() returns after this even with no data
 RECONNECT_DELAY = 2.0          # seconds between reconnect attempts
 MAX_LINE = 4096                # a real telemetry line is ~200B; larger w/o a newline = framing fault
 
-# Broker host/port are env vars for the same reason PORT is: when the broker
-# migrates from the Pi to the cloud in Chunk 16, the same committed file works
-# by changing an env var, not the code. Today the container runs with
-# network_mode: host, so 127.0.0.1 reaches the Pi's Mosquitto directly; under
-# bridge networking this becomes a Compose service name. No code change either way.
+# Env-driven so the broker can move (Pi -> cloud, Chunk 16) with no code change. Host
+# networking today: 127.0.0.1 reaches the Pi's Mosquitto; a Compose service name under bridge.
 BROKER_HOST = os.environ.get("FLEET_MQTT_HOST", "localhost")
 BROKER_PORT = int(os.environ.get("FLEET_MQTT_PORT", "1883"))
 
-# Identity must be known BEFORE connect, because the Last-Will topic is sent
-# inside the CONNECT packet -- before a single telemetry line has been read.
-# So identity is configuration, not payload.
+# Identity must exist before connect: the will topic ships inside the CONNECT packet. So it's config, not payload.
 DEVICE_ID = os.environ.get("FLEET_DEVICE_ID", "fleet-edge-01")
 
 TOPIC_TELEMETRY = f"fleet/{DEVICE_ID}/telemetry"
 TOPIC_HEARTBEAT = f"fleet/{DEVICE_ID}/heartbeat"
 TOPIC_STATUS    = f"fleet/{DEVICE_ID}/status"   # retained connection state ONLY
 
-# 30s => broker declares us dead after ~45s of silence (1.5x keepalive).
-# That figure IS the MTTD floor for gateway death: nothing downstream can know
-# sooner, because the fact doesn't exist until the broker publishes our will.
-# Chosen against the availability SLO, not taken from paho's 60s default.
+# 30s => broker declares us dead after ~45s (1.5x keepalive). That's the MTTD floor for
+# gateway death: nothing downstream knows sooner. Chosen against the availability SLO.
 MQTT_KEEPALIVE = 30
 
 STATUS_ONLINE   = json.dumps({"id": DEVICE_ID, "state": "online"})
@@ -100,64 +65,43 @@ STATUS_LWT      = json.dumps({"id": DEVICE_ID, "state": "offline", "reason": "lw
 STATUS_SHUTDOWN = json.dumps({"id": DEVICE_ID, "state": "offline", "reason": "shutdown"})
 
 # --- Chunk 13: store-and-forward ---------------------------------------------
-# BOUNDED, because an unbounded queue does not prevent loss -- it converts a
-# small bounded loss into an OOM kill on a 2GB Pi, which loses the queue AND the
-# gateway. Bounded means the loss is capped, counted, and logged. That is
-# backpressure: the Nucleo cannot be told to slow down, so we decide in advance
-# what we sacrifice.
-#
-# Sizing: 10 Hz x ~230 B/frame. 6000 frames = 10 min of outage = ~1.4 MB
-# resident. Sized to the outage class we intend to survive (broker restart,
-# network blip) -- NOT to an all-day outage, whose backlog Prometheus could not
-# use anyway (it stamps samples at scrape time, so a flush does not backfill).
-#
-# Note the buffer is heap memory in a container with no memory limit set today.
-# If a `mem_limit` is ever added, it must exceed BUFFER_MAXLEN * frame_size plus
-# the interpreter, or the cgroup OOM killer reintroduces exactly the failure the
-# bound was chosen to prevent -- with less warning, since the kill is external.
+# Bounded: an unbounded queue trades a small capped loss for an OOM kill that loses the
+# queue AND the gateway. Bounded = loss is capped, counted, logged (backpressure).
+# 6000 frames @ 10 Hz x ~230B ~= 10 min / ~1.4 MB: sized for a broker restart or blip,
+# not an all-day outage (Prometheus stamps at scrape time, so a late flush can't backfill).
+# If a cgroup mem_limit is ever set it must exceed BUFFER_MAXLEN*frame_size + interpreter,
+# or the OOM killer reintroduces the exact failure the bound prevents.
 BUFFER_MAXLEN = int(os.environ.get("FLEET_BUFFER_MAXLEN", "6000"))
 
-# Max frames published per pass through the read loop. A greedy flush would not
-# call ser.read() while draining, the kernel's serial input buffer would overrun,
-# and we would lose LIVE data while frantically saving DEAD data. At ~9 loop
-# passes/s this drains ~450 msg/s against a 10 msg/s ingest: the backlog clears
-# ~45x faster than it fills, and the reader is serviced every pass.
+# Cap frames/pass so a flush never starves ser.read() (which would overrun the kernel's
+# serial buffer -- losing live data to save dead data). ~450 msg/s drain vs 10 msg/s ingest.
 DRAIN_BATCH = int(os.environ.get("FLEET_DRAIN_BATCH", "50"))
 
 STAT_INTERVAL = 10.0           # seconds between [stat] lines
 
 
 def open_serial() -> serial.Serial:
-    """Block until the port opens, then return the handle. Retries forever so
-    the gateway can be started before the Nucleo is plugged in.
-
-    Retrying forever is only correct because /dev is the host's live devtmpfs:
-    when udev recreates the by-id symlink on replug, this loop sees it. With a
-    `--device` passthrough the node inside the container is a frozen copy, and
-    this loop would spin on ENXIO until someone recreated the container."""
+    """Block until the port opens; retries forever so the gateway can start before the
+    Nucleo is plugged in. Correct only because /dev is the host's live devtmpfs, so this
+    loop sees udev recreate the by-id symlink on replug (a `--device` node would not)."""
     while True:
         try:
             ser = serial.Serial(PORT, BAUD, timeout=READ_TIMEOUT)
-            # Discard bytes that accumulated in the OS buffer before we started
-            # reading. The first bytes are almost always a mid-line fragment
-            # (no opening '{'), which would fail to parse. Flushing chooses
-            # freshness over a stale backlog -- ties to the freshness SLI.
+            # Flush pre-connect bytes: the first are usually a mid-line fragment that
+            # won't parse. Freshness over stale backlog -- ties to the freshness SLI.
             ser.reset_input_buffer()
             log(f"[serial] connected {PORT} @ {BAUD}")
             return ser
         except OSError as e:   # serial.SerialException subclasses OSError
-            # EPERM here (and not ENOENT) means the node exists but the device
-            # cgroup denied the open. That is a container-config fault, not a
-            # wiring fault: no amount of chmod on the host will fix it.
+            # EPERM (vs ENOENT) = node exists but the device cgroup denied the open:
+            # a container-config fault, not wiring; host chmod won't fix it.
             log(f"[serial] {PORT} not ready ({e}); retry in {RECONNECT_DELAY}s")
             time.sleep(RECONNECT_DELAY)
 
 
 def on_connect(client, userdata, connect_flags, reason_code, properties):
-    """Fires on EVERY successful connection, including paho's auto-reconnects.
-    That is exactly why the retained 'online' publish lives here and not inline
-    after connect(): a gateway that reconnects after a network blip must restore
-    its own status, or the broker keeps serving the retained 'offline' will."""
+    """Fires on every (re)connect, so the retained 'online' publish lives here: after a
+    blip we must overwrite our own retained 'offline' will, not leave it serving stale."""
     if reason_code != 0:
         log(f"[mqtt] connect failed: {reason_code}")
         return
@@ -170,35 +114,25 @@ def on_connect(client, userdata, connect_flags, reason_code, properties):
 
 
 def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
-    """The only place `connected` goes False. Everything downstream (drain,
-    heartbeat) reads this flag rather than asking paho, so there is exactly one
-    source of truth for link state."""
+    """The only place `connected` goes False -- one source of truth for link state that
+    everything downstream (drain, heartbeat) reads instead of asking paho."""
     userdata["connected"] = False
     log(f"[mqtt] disconnected ({reason_code}); buffering telemetry")
 
 
 def make_mqtt_client(state: dict) -> mqtt.Client:
-    """Connect to the broker and start a background network thread.
-    loop_start() runs paho's I/O on its own thread so our serial read loop
-    stays in control -- loop_forever() would block and starve the reader.
-    CallbackAPIVersion.VERSION2 is mandatory in paho-mqtt 2.x.
-
-    `state` is handed to paho as userdata so the callbacks can flip `connected`
-    and read the buffer depth without a module-level global."""
+    """Build the client. loop_start() runs paho I/O on its own thread so the serial read
+    loop keeps control. `state` is passed as userdata so callbacks share link state."""
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata=state)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
 
-    # The will travels INSIDE the CONNECT packet, so it must be registered
-    # before any connect call. Retained, because a subscriber that arrives
-    # after our death must not be served the stale 'online' message.
+    # Will ships inside CONNECT, so register before connecting. Retained so a subscriber
+    # arriving after our death isn't served the stale 'online'.
     client.will_set(TOPIC_STATUS, STATUS_LWT, qos=1, retain=True)
 
-    # connect_async + loop_start defers the connect to paho's thread and retries,
-    # so a broker that's down at boot doesn't crash the gateway (symmetric with
-    # open_serial). This matters more in a container: `restart: unless-stopped`
-    # will happily restart-loop a process that exits because the broker wasn't
-    # up yet, and a crash-loop is a worse signal than a quiet retry.
+    # connect_async + loop_start: connect happens on paho's thread and retries, so a
+    # broker down at boot doesn't crash (and crash-loop) the container under `restart:`.
     client.connect_async(BROKER_HOST, BROKER_PORT, MQTT_KEEPALIVE)
     client.loop_start()
     log(f"[mqtt] connecting to {BROKER_HOST}:{BROKER_PORT} (keepalive {MQTT_KEEPALIVE}s)")
@@ -206,9 +140,8 @@ def make_mqtt_client(state: dict) -> mqtt.Client:
 
 
 def extract_lines(buf: bytearray):
-    """Pull every complete newline-terminated line out of buf, in order.
-    Whatever follows the last newline is a PARTIAL line -- it stays in buf
-    until the rest of it arrives on a later read, then gets parsed."""
+    """Yield each complete newline-terminated line in order; the trailing partial line
+    stays in buf until the rest arrives on a later read."""
     while b"\n" in buf:
         idx = buf.index(b"\n")
         line = bytes(buf[:idx]).strip()
@@ -218,16 +151,9 @@ def extract_lines(buf: bytearray):
 
 
 def enqueue(state: dict, payload: str):
-    """Append telemetry to the ring buffer, counting evictions.
-
-    deque(maxlen=N) evicts the oldest element SILENTLY, and a silent drop is the
-    exact failure this chunk exists to fix. So the eviction is counted before the
-    append, or the loss is invisible.
-
-    Drop-oldest is correct for telemetry: the newest sample is the most valuable
-    one, because the dashboard and the anomaly detector both care about now. An
-    audit log or a ledger would drop the NEWEST instead and refuse the write.
-    """
+    """Append to the ring buffer, counting evictions first -- deque(maxlen) drops the
+    oldest silently, and a silent drop is the bug this chunk fixes. Drop-oldest is right
+    for telemetry: the newest sample is the most valuable (an audit log would drop newest)."""
     buf = state["buf"]
     if len(buf) == buf.maxlen:
         state["dropped"] += 1
@@ -237,21 +163,13 @@ def enqueue(state: dict, payload: str):
 
 
 def drain(client: mqtt.Client, state: dict) -> int:
-    """The ONLY publisher of telemetry. Pops FIFO, up to DRAIN_BATCH per pass.
-
-    A frame is popped only AFTER paho accepts it; on failure it stays at the head
-    and is retried next pass. FIFO + head-retry means the stream is never
-    reordered, so `seq` stays monotonic and the consumer's gap detection keeps
-    working across a flush.
-
-    Note what MQTT_ERR_SUCCESS actually means at QoS 0: paho accepted the frame
-    into its socket buffer. NOT that the broker received it. This buffer covers
-    DISCONNECTED loss; in-flight loss is covered by seq-gap detection downstream.
-    """
+    """The only publisher of telemetry. Pops FIFO up to DRAIN_BATCH/pass, and only after
+    paho accepts a frame -- on failure it stays at the head and retries, so seq stays
+    monotonic. Note QoS 0 success = accepted into paho's socket buffer, NOT broker-received;
+    this buffer covers DISCONNECTED loss, in-flight loss is caught by seq-gap detection."""
     buf = state["buf"]
-    # No per-frame print. Logging every message at 10 Hz buries the [stat] line,
-    # fills the disk, and -- while clearing a 6000-frame backlog to a remote
-    # stdout -- would itself starve the read loop. Only report when catching up.
+    # No per-frame log: at 10 Hz it buries [stat], fills disk, and could starve the read
+    # loop while flushing a 6000-frame backlog. Only report when catching up.
     backlog = len(buf) > DRAIN_BATCH
     sent = 0
     while buf and sent < DRAIN_BATCH and state["connected"]:
@@ -267,19 +185,9 @@ def drain(client: mqtt.Client, state: dict) -> int:
 
 
 def publish_heartbeat(client: mqtt.Client, state: dict, payload: str):
-    """Heartbeats are NEVER buffered.
-
-    The freshness SLI is `now - last_received`, measured downstream. Replaying a
-    stale heartbeat after an outage would report the device as fresh across a
-    window in which the control plane demonstrably could not see it -- the system
-    would manufacture a lie about its own availability. A heartbeat is only
-    meaningful at the instant it arrives; if it cannot be delivered now, destroy it.
-
-    Which is also why it is QoS 0, not the QoS 1 Chunk 12 first gave it: paho
-    QUEUES QoS>0 publishes while disconnected and replays them on reconnect --
-    exactly the replay this function exists to prevent. A liveness token needs
-    the QoS level that does not retransmit.
-    """
+    """Heartbeats are never buffered: freshness is `now - last_received`, so replaying a
+    stale heartbeat after an outage would fake availability. QoS 0 (not 1) for the same
+    reason -- paho queues and replays QoS>0 publishes on reconnect, the replay we forbid."""
     if not state["connected"]:
         state["hb_dropped"] += 1
         return
@@ -288,10 +196,8 @@ def publish_heartbeat(client: mqtt.Client, state: dict, payload: str):
 
 
 def handle_line(raw: bytes, client: mqtt.Client, state: dict):
-    """Parse one complete line as JSON, then route it. A malformed line is logged
-    and dropped BEFORE it reaches the buffer or MQTT -- only valid telemetry
-    enters the pipeline, so parse/framing failures stay upstream and never leave
-    the gateway. A single corrupt frame must not take it down."""
+    """Parse one line as JSON and route it. Malformed lines are counted and dropped
+    before the buffer or MQTT, so framing/parse faults stay upstream of the gateway."""
     try:
         msg = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -301,10 +207,8 @@ def handle_line(raw: bytes, client: mqtt.Client, state: dict):
 
     payload = json.dumps(msg)
 
-    # /status is reserved for retained CONNECTION state (online/offline).
-    # The firmware heartbeat is a different fault domain -- device liveness,
-    # not link liveness -- so it gets its own topic. Publishing it to /status
-    # would clobber the retained will marker.
+    # Heartbeat gets its own topic (device liveness != link liveness); publishing it to
+    # /status would clobber the retained will marker.
     if msg.get("type") == "heartbeat":
         publish_heartbeat(client, state, payload)   # bypasses the buffer, by design
     else:
@@ -348,9 +252,8 @@ def main():
                 for line in extract_lines(buf):
                     handle_line(line, client, state)
 
-            # Runs every pass, INCLUDING the read-timeout path -- a backlog must
-            # keep flushing even when the Nucleo has gone quiet. No-ops when the
-            # queue is empty or the link is down.
+            # Every pass, including the read-timeout path, so a backlog keeps flushing
+            # when the Nucleo goes quiet. No-ops when the queue is empty or link is down.
             drain(client, state)
 
             now = time.monotonic()
@@ -360,24 +263,13 @@ def main():
                     f"errs={state['parse_errors']} connected={state['connected']}")
                 last_stat = now
     finally:
-        # Cleanup runs in IMPORTANCE order, and anything that can raise goes LAST.
-        # Learned the hard way: a print() into a dead pipe (`| grep`, killed by the
-        # same Ctrl-C) raised BrokenPipeError here and skipped disconnect(). No
-        # DISCONNECT packet was sent, so the broker treated a planned shutdown as
-        # an ungraceful death and fired the will -- the retained status flipped
-        # from reason:shutdown to reason:lwt. A crash in the LOGGING path silently
-        # rewrote the incident record. Logging is I/O; I/O fails; cleanup handlers
-        # do their real work before they narrate it.
-        #
-        # This block is also on a CLOCK now. `docker stop` gives us
-        # stop_grace_period seconds before SIGKILL, which cannot be caught. Every
-        # bounded wait below (2.0s) must sum to comfortably less than that budget,
-        # or the container's own supervisor destroys the graceful shutdown it
-        # asked for.
+        # Cleanup in importance order, raisy work last: a print() into a dead pipe once
+        # raised here and skipped disconnect(), so the will fired and the retained status
+        # flipped shutdown->lwt. Also on a clock -- `docker stop` SIGKILLs after the grace
+        # period, so every bounded wait below (2.0s) must sum to well under it.
         try:
-            # A CLEAN disconnect suppresses the will -- the broker assumes we meant
-            # to leave. So we must overwrite the retained status ourselves, or it
-            # says 'online' forever after a graceful Ctrl-C.
+            # A clean disconnect suppresses the will, so overwrite the retained status
+            # ourselves or it says 'online' forever after a graceful Ctrl-C.
             info = client.publish(TOPIC_STATUS, STATUS_SHUTDOWN, qos=1, retain=True)
             info.wait_for_publish(timeout=2.0)   # network thread is still alive here
         except Exception:
@@ -389,14 +281,10 @@ def main():
         except Exception:
             pass
 
-        # Cosmetics only, past this point. Nothing below can affect broker state.
+        # Cosmetics only past here -- nothing below can affect broker state.
         log(f"[mqtt] {TOPIC_STATUS} offline (retained)")
-        # The buffer is memory-only: it survives a BROKER outage, not our own
-        # death. Containerizing does not change that -- an image is not a volume,
-        # and `docker restart` throws the deque away exactly as Ctrl-C does.
-        # Durability across a gateway restart means a disk-backed queue
-        # (SQLite/WAL) on a mounted volume -- deliberately out of scope, and
-        # worth saying out loud.
+        # Buffer is memory-only: survives a broker outage, not our own restart. Durability
+        # across a gateway restart needs a disk-backed queue on a volume -- out of scope.
         if state["buf"]:
             log(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
         log(f"[mqtt] disconnected -- pub={state['published']} "
@@ -405,11 +293,9 @@ def main():
 
 
 if __name__ == "__main__":
-    # Registered BEFORE main() so a `docker stop` issued one millisecond after
-    # container start still unwinds cleanly. As PID 1 we get no default handler:
-    # the kernel refuses to deliver a signal to PID 1 unless a handler exists,
-    # so without this line SIGTERM is dropped on the floor and docker SIGKILLs us
-    # after the grace period -- skipping the finally block and firing the will.
+    # Register before main() so an early `docker stop` still unwinds. As PID 1 there's no
+    # default handler -- without this, SIGTERM is dropped and docker SIGKILLs us after the
+    # grace period, skipping the finally block and firing the will.
     signal.signal(signal.SIGTERM, _on_sigterm)
 
     try:
@@ -417,10 +303,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log("\n[serial] stopped")
     finally:
-        # CPython flushes stdout on interpreter exit, AFTER our code has run. If
-        # the pipe is dead that flush raises where nothing can catch it, and the
-        # process exits with "Exception ignored" noise. Point the fd at /dev/null
-        # so the final flush has somewhere harmless to go.
+        # CPython flushes stdout at exit, after our code runs; if the pipe is dead that
+        # raises uncatchably. Redirect the fd to /dev/null so the final flush is harmless.
         try:
             sys.stdout.flush()
         except BrokenPipeError:
