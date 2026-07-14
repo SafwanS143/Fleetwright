@@ -300,14 +300,14 @@ Prometheus" has to become "can reason about it."_
 
 - The scrape config and scrape interval: how Prometheus is told what target to hit and how often.
 
-  _(your answer here)_
+  Scrape config is a list of jobs (endpoints). The configs have the scrape intervals (as well as a global interval) which is how often data is scraped from the endpoint.
 
 **Interview-critical tier:**
 
 - What `rate()` does and why you wrap a counter in it: a raw counter's absolute value is meaningless;
   `rate()` gives the per-second increase over a window, which is the thing you actually graph/alert on.
 
-  _(your answer here)_
+  A raw counter doesn't mean anything. Having a number of how many messages a certain device sent doesn't provide value, but the rate of which the messages come in is a meaningful data to graph. Graphing raw counters is almost never useful. Guages on the other hand go up and down, and in most cases are useful to graph (like our temp/pressure)
 
 ## Chunk 17 — Per-device dashboard
 
@@ -317,13 +317,13 @@ Prometheus" has to become "can reason about it."_
   bucket counts estimates the value below which 95% of samples fall — an interpolation across buckets,
   not an exact percentile.
 
-  _(your answer here)_
+  We can't directly calculate the p95 latency. In fact we don't even store how long each message took to reach. We put the latency of messages into buckets as counters and we store the counters themselves. We estimate the 95th percentile across those buckets, assuming an even spread. It's not a perfect number but gets the job done.
 
 **One-liner tier:**
 
 - What freshness looks like as a metric: `now − last-seen` (time since the last message from a device).
 
-  _(your answer here)_
+  The freshness is the time since the last message was sent from the device. This is very useful to diagnose connections between the broker, device, and device health
 
 ## Chunk 18 — SLIs / SLOs / error budgets
 

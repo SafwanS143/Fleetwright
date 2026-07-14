@@ -1,0 +1,20 @@
+# How often Prometheus pulls every target unless a job overrides it. This is THE scrape interval:
+# each scrape is one sample per series, so it sets both dashboard resolution and storage cost.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The bridge is our real signal. Override to 5s so a 10 Hz stream still gets several samples per
+  # minute of graph resolution; going to 1s would triple storage for little extra insight.
+  - job_name: fleet-bridge
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["bridge:8000"]   # docker-network DNS name of the bridge service
+        labels:
+          service: mqtt-prometheus-bridge
+
+  # Prometheus scraping itself — free `up`/TSDB health, and a sanity target while wiring the stack.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,216 @@
+{
+  "uid": "fleet-device",
+  "title": "Fleet — Per-Device",
+  "tags": ["fleet", "device"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "device",
+        "label": "Device",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+        "definition": "label_values(fleet_messages_total, device)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(fleet_messages_total, device)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Telemetry freshness (now − last seen)",
+      "description": "Seconds since the last message from $device. This is the freshness SLI primitive: it climbs on its own when a device goes dark, no publish required.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - fleet_last_message_timestamp_seconds{device=\"$device\"}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Message rate",
+      "description": "rate(fleet_messages_total[$__rate_interval]) — per-second ingest for this device. Should sit near the firmware sample rate (~10/s).",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(fleet_messages_total{device=\"$device\"}[$__rate_interval])",
+          "legendFormat": "msgs/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Inter-message latency p95",
+      "description": "histogram_quantile(0.95, rate(..._bucket)) — the 95th-percentile gap between consecutive messages, estimated from the histogram buckets.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fleet_intermessage_gap_seconds_bucket{device=\"$device\"}[$__rate_interval])))",
+          "legendFormat": "p95 gap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Packet loss (seq gaps)",
+      "description": "rate(fleet_sequence_gaps_total[$__rate_interval]) — messages the firmware seq says were skipped between broker and bridge. Flat zero is healthy.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(fleet_sequence_gaps_total{device=\"$device\"}[$__rate_interval])",
+          "legendFormat": "lost/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "fillOpacity": 20 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Decode errors",
+      "description": "rate(fleet_message_errors_total[$__rate_interval]) by reason — payloads that arrived but failed to parse (distinct from packet loss, which is messages that never arrived).",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(fleet_message_errors_total{device=\"$device\"}[$__rate_interval])",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "fillOpacity": 20 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Motion — accel magnitude",
+      "description": "fleet_accel_magnitude_g — sqrt(ax²+ay²+az²); ~1.0 g at rest (gravity), spikes on vibration/shake.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 13 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fleet_accel_magnitude_g{device=\"$device\"}",
+          "legendFormat": "|a| (g)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Temperature",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 13 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fleet_temperature_celsius{device=\"$device\"}",
+          "legendFormat": "temp"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "celsius", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Humidity",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fleet_humidity_percent{device=\"$device\"}",
+          "legendFormat": "humidity"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "humidity", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Pressure",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fleet_pressure_hpa{device=\"$device\"}",
+          "legendFormat": "pressure"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "pressurehpa", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# Load any dashboard JSON dropped into the mounted folder — dashboards live in git, not in Grafana's DB.
+apiVersion: 1
+
+providers:
+  - name: fleet
+    orgId: 1
+    folder: Fleet
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30   # re-read the folder so edits to the JSON show up without a restart
+    allowUiUpdates: true        # let you tweak in the UI to iterate; export the JSON back into git
+    options:
+      path: /var/lib/grafana/dashboards

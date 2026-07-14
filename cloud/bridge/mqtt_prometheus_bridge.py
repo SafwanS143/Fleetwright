@@ -55,8 +55,19 @@ INTERMESSAGE_GAP = Histogram(
     buckets=(0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0),
 )
 
+# Packet loss surfaced from the firmware's monotonic seq (Chunk 9): a jump larger than 1 between
+# consecutive messages means the gateway/broker dropped the ones in between. A counter (not a gauge)
+# because loss is cumulative — you rate() it in PromQL to get a loss-per-second signal.
+SEQUENCE_GAPS = Counter(
+    "fleet_sequence_gaps_total",
+    "Telemetry messages skipped, inferred from gaps in the firmware sequence number.",
+    ["device"],
+)
+
 # Per-device prior arrival, used only to compute the gap. Single-writer (on_message thread), so no lock.
 _last_arrival: dict[str, float] = {}
+# Per-device prior seq, used only to detect skipped messages. Same single-writer thread, no lock.
+_last_seq: dict[str, int] = {}
 
 
 # ── MQTT callbacks (paho-mqtt 2.x / CallbackAPIVersion.VERSION2) ─────────────
@@ -92,6 +103,15 @@ def on_message(client, userdata, msg):
     if prev is not None:
         INTERMESSAGE_GAP.labels(device=device).observe(now - prev)
     _last_arrival[device] = now
+
+    # Packet loss from the seq counter. Only count a forward jump > 1; a backwards/reset seq means the
+    # device rebooted (seq restarts at 0), so reseed instead of logging a huge bogus gap.
+    seq = data.get("seq")
+    if isinstance(seq, int):
+        prev_seq = _last_seq.get(device)
+        if prev_seq is not None and seq > prev_seq + 1:
+            SEQUENCE_GAPS.labels(device=device).inc(seq - prev_seq - 1)
+        _last_seq[device] = seq
 
     # Sensor fields are optional (heartbeats omit them); never default to 0.0 — a phantom 0 fakes a reading.
     if "temp" in data:

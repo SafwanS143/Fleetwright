@@ -1,0 +1,59 @@
+name: fleet-cloud
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # published to the host so the Pi (or fake_telemetry.py) can publish in
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+  bridge:
+    build: ./bridge
+    restart: unless-stopped
+    environment:
+      # Service name, not an IP: docker's embedded DNS resolves `mosquitto` on this network.
+      FLEET_BROKER_HOST: mosquitto
+      FLEET_BROKER_PORT: "1883"
+      FLEET_METRICS_PORT: "8000"
+    # No host port: only Prometheus needs to reach /metrics, and it does so over the internal network.
+    expose:
+      - "8000"
+    depends_on:
+      - mosquitto   # start-order only; the bridge's loop_forever() reconnects if the broker lags
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"   # expose the Prometheus UI/targets page on the host for debugging
+    depends_on:
+      - bridge
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin   # DEV ONLY — change/secret this before anything is exposed
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+# Named volumes so broker persistence, the Prometheus TSDB, and Grafana's DB survive `down`/`up`.
+# (Config and dashboards are bind-mounted from git above; only mutable runtime state lives here.)
+volumes:
+  mosquitto-data:
+  prometheus-data:
+  grafana-data:

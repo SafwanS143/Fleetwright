@@ -1,0 +1,14 @@
+# Provisioned at startup so Grafana comes up with Prometheus already wired — no click-ops.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # Fixed UID so the dashboard JSON can hard-reference this datasource and stay import-portable.
+    uid: fleet-prometheus
+    access: proxy                 # Grafana server proxies to Prometheus; the browser never hits :9090
+    url: http://prometheus:9090   # docker-network DNS name of the prometheus service
+    isDefault: true
+    jsonData:
+      # Match the bridge scrape interval so $__rate_interval picks a sane window for rate().
+      timeInterval: 5s
