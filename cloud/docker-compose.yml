@@ -29,6 +29,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro   # SLI/SLO rule files (Chunk 18)
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"   # expose the Prometheus UI/targets page on the host for debugging

@@ -30,3 +30,16 @@ docker compose up -d --build          # mosquitto + bridge + prometheus + grafan
 Layout: [`docker-compose.yml`](docker-compose.yml), [`mosquitto/`](mosquitto/),
 [`prometheus/`](prometheus/), [`grafana/provisioning`](grafana/provisioning) (datasource + dashboard
 provider), [`grafana/dashboards`](grafana/dashboards) (the per-device board, Chunk 17).
+
+## SLIs / SLOs (Chunk 18)
+
+[`prometheus/rules/fleet_slos.yml`](prometheus/rules/fleet_slos.yml) defines the SLIs as `fleet:...`
+recording rules (freshness, availability, ingest error rate) and the SLO targets as alert thresholds.
+Targets and rationale are documented in the [root README](../README.md#slis--slos--error-budgets).
+
+- Recording rules / SLI series: http://localhost:9090/graph (e.g. `fleet:availability:ratio`)
+- SLO alerts (pending/firing): http://localhost:9090/alerts
+
+There's no Alertmanager yet — breaches only surface on the Prometheus **/alerts** page. Routing them to
+Slack with severity, dedup, and suppression is Chunk 22. After editing the rules, reload Prometheus:
+`docker compose kill -s SIGHUP prometheus` (or restart the container).

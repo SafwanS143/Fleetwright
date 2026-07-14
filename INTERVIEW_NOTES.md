@@ -331,19 +331,23 @@ Prometheus" has to become "can reason about it."_
 
 - SLI vs SLO vs SLA: the measured indicator, the target you set for it, the contract with consequences.
 
-  _(your answer here)_
+  SLO: Service level objective. This is a goal that you set while making the project to ensure user experience
+
+  SLI: The actual measured indicator. This should almost always be within your SLOs. SLOs are the goal, SLIs are the actual values the goal wants to stay within
+
+  SLA: Service level Agreement. This is between the client and the provider of the service, entailing SLOs and consequences for breaching the SLOs
 
 - How you chose each number (freshness / availability / error rate) — a reason, not a vibe.
 
-  _(your answer here)_
-
 - What an **error budget** is and what it lets you _do_ (ship vs. freeze).
 
-  _(your answer here)_
+  An error budget is the leeway allowed by your SLOs. This lets you measure downwtime and decide whether you should ship the product and make changes within the budget, or freeze the service.
+
+  An example of this would be 99.5% uptime over 30 days. The error budget is the number of hrs you can be down.
 
 - Why you alert on **symptoms / SLO burn**, not every raw cause.
 
-  _(your answer here)_
+  Alert for symptoms, since they actually account for the SLO budget burning and are what the client's directly impacted by. Raw causes are great for logs to then diagnose what happened, but symptoms give the whole picture and whether or not it's a problem.
 
 ## Chunk 19 — Four golden signals mapping
 

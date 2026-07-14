@@ -2,7 +2,12 @@
 # each scrape is one sample per series, so it sets both dashboard resolution and storage cost.
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
+  evaluation_interval: 15s # how often SLI recording rules + SLO alerts are re-evaluated
+
+# SLI recording rules and SLO alert thresholds (Chunk 18). Glob so new rule files are picked up
+# on reload without touching this config.
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 scrape_configs:
   # The bridge is our real signal. Override to 5s so a 10 Hz stream still gets several samples per
@@ -10,7 +15,7 @@ scrape_configs:
   - job_name: fleet-bridge
     scrape_interval: 5s
     static_configs:
-      - targets: ["bridge:8000"]   # docker-network DNS name of the bridge service
+      - targets: ["bridge:8000"] # docker-network DNS name of the bridge service
         labels:
           service: mqtt-prometheus-bridge
 

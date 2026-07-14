@@ -1,0 +1,90 @@
+# Chunk 18 — SLIs as recording rules + SLOs as alert thresholds.
+#
+# Recording rules precompute each SLI into a first-class `fleet:...` series, so dashboards and (later)
+# burn-rate math read one cheap metric instead of re-deriving it. Alert rules encode the SLO targets;
+# there's no Alertmanager yet (routing to Slack lands in Chunk 22), so for now a breach simply shows up
+# on Prometheus /alerts as pending → firing. The thresholds live here so that wiring is a config change,
+# not a code change.
+
+groups:
+  # ── SLIs as recording rules ─────────────────────────────────────────────────
+  - name: fleet_sli_recording
+    interval: 15s
+    rules:
+      # Freshness (per device): seconds since the last message. Computed with time() at eval, so it
+      # climbs on its own for a dead device — the bridge keeps exporting that device's last-seen stamp.
+      - record: fleet:device_freshness_seconds
+        expr: time() - fleet_last_message_timestamp_seconds
+
+      # A device is "up" when it's fresh inside the 10s window (1 = up, 0 = stale). Rules in a group
+      # evaluate in order, so this and the ratio below safely build on the record above.
+      - record: fleet:device_up:bool
+        expr: fleet:device_freshness_seconds < bool 10
+
+      # Fleet availability: fraction of known devices currently fresh (avg of 1/0 = the ratio).
+      - record: fleet:availability:ratio
+        expr: avg(fleet:device_up:bool)
+
+      # Ingest error rate: malformed frames as a fraction of all frames that arrived (parsed + failed).
+      # Packet loss (seq gaps) is intentionally NOT in here: QoS 0 trades completeness for liveness, so
+      # dropped messages are tracked on the dashboard but are not an SLO objective.
+      #
+      # `or vector(0)` on the errors term is load-bearing: a labeled counter has no series until its
+      # first increment, so with zero decode errors ever, sum(rate(errors)) is EMPTY — and empty would
+      # otherwise poison both the numerator and the `+` in the denominator, giving "no data" instead of
+      # a healthy 0. The fallback makes zero-error traffic read as 0, while genuine silence (no messages)
+      # still yields no sample — you can't define an error rate with no denominator.
+      - record: fleet:ingest_error:ratio_rate5m
+        expr: |
+          (sum(rate(fleet_message_errors_total[5m])) or vector(0))
+          /
+          (sum(rate(fleet_messages_total[5m])) + (sum(rate(fleet_message_errors_total[5m])) or vector(0)))
+
+  # ── SLOs as alert thresholds (surface on /alerts; routed in Chunk 22) ────────
+  - name: fleet_slo_alerts
+    rules:
+      # Freshness SLO: each device fresh (< 10s) — page per device so attribution is automatic.
+      - alert: FleetDeviceStale
+        expr: fleet:device_freshness_seconds > 10
+        for: 30s
+        labels:
+          severity: warning
+          sli: freshness
+        annotations:
+          summary: "Device {{ $labels.device }} telemetry is stale"
+          description: "No telemetry from {{ $labels.device }} for {{ $value | humanizeDuration }} (SLO: < 10s)."
+
+      # Availability SLO: >= 95% of the fleet fresh. Tolerates a single device blip; a wider dip is systemic.
+      - alert: FleetAvailabilityBelowSLO
+        expr: fleet:availability:ratio < 0.95
+        for: 1m
+        labels:
+          severity: critical
+          sli: availability
+        annotations:
+          summary: "Fleet availability below SLO"
+          description: "Only {{ $value | humanizePercentage }} of devices are fresh (SLO: >= 95%)."
+
+      # Error-rate SLO: < 0.1% malformed frames over 5m. Machine-generated NDJSON should essentially
+      # always parse, so anything higher points at framing corruption (UART/serial), not normal load.
+      - alert: FleetHighErrorRate
+        expr: fleet:ingest_error:ratio_rate5m > 0.001
+        for: 2m
+        labels:
+          severity: warning
+          sli: error_rate
+        annotations:
+          summary: "Ingest error rate above SLO"
+          description: "Malformed-frame ratio is {{ $value | humanizePercentage }} over 5m (SLO: < 0.1%)."
+
+      # Operational alert, not one of the three SLOs: if the bridge is unscrapeable, every SLI above is
+      # blind — a different, higher-severity failure than any single device going quiet.
+      - alert: FleetIngestPipelineDown
+        expr: up{job="fleet-bridge"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          sli: pipeline
+        annotations:
+          summary: "MQTT to Prometheus bridge is down"
+          description: "Prometheus cannot scrape the bridge; freshness / availability / error SLIs are all blind."

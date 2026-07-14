@@ -72,12 +72,24 @@ Full rendered diagram: [docs/architecture.md](docs/architecture.md)
 
 ## SLIs / SLOs / Error budgets
 
-> _Placeholder — to be defined in Chunk 18. Three explicit SLIs are planned:_
-> - **Telemetry freshness** — how recently the last sample arrived (`now − last_seen`).
-> - **Availability** — fraction of devices reporting within the freshness window.
-> - **Error rate** — malformed / dropped messages as a fraction of total.
->
-> _Each will carry a stated SLO target, a justification, and an error-budget policy._
+Three service-level indicators, each recorded as a `fleet:...` series and enforced by an SLO threshold
+in [cloud/prometheus/rules/fleet_slos.yml](cloud/prometheus/rules/fleet_slos.yml).
+
+| SLI | Definition (PromQL) | SLO target | Why this number |
+| --- | --- | --- | --- |
+| **Telemetry freshness** (per device) | `time() − fleet_last_message_timestamp_seconds` | fresh (`< 10s`) ≥ 99% of the time | At 10 Hz the nominal gap is 0.1s, so 10s ≈ 100 missed messages — long enough to ride out a reconnect or gateway restart, short enough to catch a real outage fast. |
+| **Fleet availability** | `avg(fleet:device_up:bool)` — fraction of devices currently fresh | ≥ 95% of the fleet fresh | Tolerates a single device blipping offline without paging; a wider dip means a systemic problem (broker, gateway, network), not one device. |
+| **Ingest error rate** | malformed frames ÷ frames received, over 5m | `< 0.1%` (99.9% parse cleanly) | Machine-generated NDJSON should essentially always parse; anything above 0.1% points at framing corruption on the UART/serial hop, not normal operation. |
+
+**Not an SLO objective: completeness.** Packet loss (sequence-number gaps) is tracked on the dashboard
+but deliberately kept out of the error-rate SLI. Telemetry publishes at QoS 0, which trades delivery
+guarantees for liveness — so a dropped sample in a 10 Hz stream is expected, not a budget-consuming error.
+
+**Error budget.** Each SLO implies a budget of `1 − target`: 99% freshness ≈ 7.2 h/device/month of
+allowed staleness; 99.9% clean-parse ≈ 0.1% of frames. The budget is the room to absorb reconnects,
+deploys, and blips before a target is breached — when it runs out, reliability work takes priority over
+new features. Alert routing (Slack, severity, dedup) that consumes these thresholds lands in Chunk 22;
+until then, breaches surface on the Prometheus **/alerts** page.
 
 ## Runbooks
 
