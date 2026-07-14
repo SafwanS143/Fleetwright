@@ -339,6 +339,12 @@ Prometheus" has to become "can reason about it."_
 
 - How you chose each number (freshness / availability / error rate) — a reason, not a vibe.
 
+  Freshness (10s): Any tighter than 10s would mean that non-errors would be alerted for, any greater would mean a bad MTTD for devices that are actually down
+
+  Availability (>= 95%): Same signal, but this is across devices. Any tighter would require devices being on a very constrained budget. Looser would mean devices aren't reliable.
+
+  Error rate (< 0.1%): This one's very tight since it doesn't include packet loss up from the gateway to the broker. This should be very low as this would mean a parsing error or data that was transmitted failing to be processed
+
 - What an **error budget** is and what it lets you _do_ (ship vs. freeze).
 
   An error budget is the leeway allowed by your SLOs. This lets you measure downwtime and decide whether you should ship the product and make changes within the budget, or freeze the service.
