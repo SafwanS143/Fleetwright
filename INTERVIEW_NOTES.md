@@ -362,6 +362,117 @@ Prometheus" has to become "can reason about it."_
 - Which telemetry channel covers which signal (latency / traffic / errors / saturation), and which
   signal you're **not** covering and why — be honest about the gap.
 
+  Latency: Redefined as delivery latency, since our service has no requests. This is covered by the fleet freshness signal fleet_intermessage_gap_seconds
+
+  Traffic: rate(fleet_messages_total[5m]). Pretty simple
+
+  Errors: rate(fleet_message_errors_total[5m]). This only covers errors in parsing etc. after the gateway stage. It doesn't catch anything during the firmware/TCP connection to the Pi. It also excludes gaps in seq since we trade completeness for liveness by using QoS 0 in our publish.
+
+  There is no saturation, since we don't really have a queue for requests or anything. The ring buffer is for sending messages while the broker is down, and removes messages immediately. Nothing about crashing systems here.
+
+# Phase 4 — Reliability (adapt the SRE Monitor — first postable state)
+
+_Mostly adapted from the SRE Monitor (Isolation Forest, Slack alerting + dedup, SQLite incidents), so
+like Phase 3 the build is fast and the weight is on defend. Interviewers probe ML claims hardest, so
+Chunks 20–21 (why per-channel, IF limitations) are the highest-risk answers here. The rest is SRE
+vocabulary — symptom-based alerting, alert fatigue, MTTD vs MTTR, runbooks — that has to be reflexive._
+
+**Tier 1 — Interview-critical, full depth:**
+
+1. Why **per-channel** IF models, not one global model; why unsupervised fits — Chunk 20.
+2. IF **limitations** + contamination/threshold tradeoff; IF vs z-score, and when _not_ to use IF — Chunk 21.
+3. Why **severity + routing**, and why symptom/SLO-based firing beats cause-based — Chunk 22.
+4. How **dedup + suppression** stop flapping, and why the window is the length it is — Chunk 23.
+5. **MTTD vs MTTR** and which the incident design optimizes — Chunk 24.
+6. Walk the **architecture diagram** end to end — Chunk 25.
+
+## Chunk 20 — Isolation Forest per channel
+
+**Interview-critical tier:**
+
+- Why **per-channel** models, not one global model; and why an unsupervised method fits here (no
+  labeled fault data, "normal" is all you can define).
+
   _(your answer here)_
 
-<!-- Phases 4-7 stubs added as you reach them. -->
+**One-liner tier:**
+
+- How IF works at a high level: random splits partition the data; a point that isolates in a **short
+  path** (few splits) is easy to separate and therefore anomalous.
+
+  _(your answer here)_
+
+## Chunk 21 — IF limitations + threshold tuning
+
+**Interview-critical tier:**
+
+- The **limitations**: false positives when the device legitimately changes regime (a BME280 actually
+  heating up is "anomalous" but not a fault). Name one concrete false-positive scenario and your
+  mitigation.
+
+  _(your answer here)_
+
+- How **contamination / threshold** trades false positives vs. missed detections.
+
+  _(your answer here)_
+
+- Why you'd pick IF over a plain **z-score / static threshold** — **and when you wouldn't.**
+
+  _(your answer here)_
+
+## Chunk 22 — Alerting: severity + routing
+
+**Interview-critical tier:**
+
+- Why **severity + routing** matters (getting the right signal to the right owner, not one undifferentiated firehose).
+
+  _(your answer here)_
+
+- Why **symptom / SLO-based** firing beats cause-based firing.
+
+  _(your answer here)_
+
+## Chunk 23 — Dedup + suppression
+
+**Interview-critical tier:**
+
+- How the design stops **flapping** (dedup + a suppression window), and **why the window is the length
+  it is** — the tradeoff behind the number.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- What **alert fatigue** is, and why a noisy alert is worse than no alert.
+
+  _(your answer here)_
+
+## Chunk 24 — Incident store + timeline
+
+**Interview-critical tier:**
+
+- **MTTD vs MTTR** — what each measures, and which your design optimizes.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- The **incident lifecycle**: open on trip, close on recovery, timeline of what happened in between.
+
+  _(your answer here)_
+
+## Chunk 25 — Runbooks + finalize architecture diagram
+
+**Interview-critical tier:**
+
+- Walk the **architecture diagram** end to end — every hop, and what fails at each.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- What a **runbook** is for, and how it cuts MTTR.
+
+  _(your answer here)_
+
+<!-- Phases 5-7 stubs added as you reach them. -->
