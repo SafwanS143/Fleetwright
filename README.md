@@ -91,6 +91,10 @@ deploys, and blips before a target is breached — when it runs out, reliability
 new features. Alert routing (Slack, severity, dedup) that consumes these thresholds lands in Chunk 22;
 until then, breaches surface on the Prometheus **/alerts** page.
 
+**Golden signals.** How these metrics map onto the four golden signals (latency / traffic / errors /
+saturation) — and which signal is only partially covered and why — is written up in
+[docs/golden-signals.md](docs/golden-signals.md).
+
 ## Runbooks
 
 > _Placeholder — to be written in Chunk 25. Planned: "device offline → diagnose & recover",
