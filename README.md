@@ -33,7 +33,7 @@ shows up across embedded fleets everywhere.
 │  MPU-6500 (IMU)  I²C │                 │  pyserial parse       │                 │  Mosquitto broker         │
 │  BME280 (env)    I²C │                 │  bounded ring buffer  │                 │  MQTT→Prometheus bridge   │
 │  bare-metal sampling │◀─────────────── │  paho-mqtt client     │◀─────────────── │  Prometheus + Grafana     │
-│                      │   OTA cmd /cmd  │  (containerized)      │   OTA downlink  │  Isolation Forest + alerts│
+│                      │   OTA cmd /cmd  │  (containerized)      │   OTA downlink  │  anomaly detect + alerts  │
 └─────────────────────┘                 └──────────────────────┘                 └──────────────────────────┘
 ```
 
@@ -59,7 +59,7 @@ Full rendered diagram: [docs/architecture.md](docs/architecture.md)
 - **Gateway:** Python (pyserial, paho-mqtt), Docker
 - **Transport:** MQTT (Mosquitto)
 - **Observability:** Prometheus, Grafana
-- **Reliability:** Isolation Forest anomaly detection (scikit-learn), Slack alerting, SQLite incident store
+- **Reliability:** two-detector anomaly detection (robust z-score + Isolation Forest, scikit-learn), Slack alerting, SQLite incident store
 - **Platform:** Docker Compose → k3s, Helm, ArgoCD (GitOps), Terraform, GitHub Actions
 
 ---

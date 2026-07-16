@@ -372,43 +372,58 @@ Prometheus" has to become "can reason about it."_
 
 # Phase 4 — Reliability (adapt the SRE Monitor — first postable state)
 
-_Mostly adapted from the SRE Monitor (Isolation Forest, Slack alerting + dedup, SQLite incidents), so
-like Phase 3 the build is fast and the weight is on defend. Interviewers probe ML claims hardest, so
-Chunks 20–21 (why per-channel, IF limitations) are the highest-risk answers here. The rest is SRE
-vocabulary — symptom-based alerting, alert fatigue, MTTD vs MTTR, runbooks — that has to be reflexive._
+_Mostly adapted from the SRE Monitor (anomaly detection, Slack alerting + dedup, SQLite incidents), so
+like Phase 3 the build is fast and the weight is on defend. The anomaly layer runs **two** detectors — a
+statistical baseline and Isolation Forest — and the interview-valuable artifact is the evaluation that
+picks between them (Chunk 21), not the estimator. Interviewers probe ML claims hardest, so Chunks 20–21
+are the highest-risk answers here. The rest is SRE vocabulary — symptom-based alerting, alert fatigue,
+MTTD vs MTTR, runbooks — that has to be reflexive._
 
 **Tier 1 — Interview-critical, full depth:**
 
-1. Why **per-channel** IF models, not one global model; why unsupervised fits — Chunk 20.
-2. IF **limitations** + contamination/threshold tradeoff; IF vs z-score, and when _not_ to use IF — Chunk 21.
+1. Why **per-channel** detectors, not one global model; why **two** detectors instead of assuming ML — Chunk 20.
+2. The **evaluation and the decision** (which detector wins, on what evidence); the chosen detector's limitations + contamination/threshold tradeoff; statistical baseline vs IF, and when _not_ to use IF — Chunk 21.
 3. Why **severity + routing**, and why symptom/SLO-based firing beats cause-based — Chunk 22.
 4. How **dedup + suppression** stop flapping, and why the window is the length it is — Chunk 23.
 5. **MTTD vs MTTR** and which the incident design optimizes — Chunk 24.
 6. Walk the **architecture diagram** end to end — Chunk 25.
 
-## Chunk 20 — Isolation Forest per channel
+## Chunk 20 — Anomaly detection: two detectors per channel
 
 **Interview-critical tier:**
 
-- Why **per-channel** models, not one global model; and why an unsupervised method fits here (no
-  labeled fault data, "normal" is all you can define).
+- Why **per-channel** models, not one global model; and why an unsupervised/statistical approach fits
+  here (no labeled fault data, "normal" is all you can define).
 
-  _(your answer here)_
+  Per channel models allow for pin pointing which data gauages are actually causing the anomalies, compared to getting an overall anomaly score. It also makes sure that each metric gets its own proper scale, instead of solely basing it on std deviation avg.
+
+- Why **two detectors** (a statistical baseline + Isolation Forest) instead of reaching straight for
+  ML — the point is the evaluation that decides between them (Chunk 21), not the estimator.
+
+  2 detectors, one IF model and one statistical baseline ensures that the IF model is actually working and catching statistical anomalies. It also helps with tuning, as adjustments can be made to the MAD baseline and the winner can be picked.
 
 **One-liner tier:**
 
-- How IF works at a high level: random splits partition the data; a point that isolates in a **short
-  path** (few splits) is easy to separate and therefore anomalous.
+- How each detector works at a high level: statistical baseline — distance from a rolling baseline in
+  robust-std units (z-score / MAD) past a threshold; IF — random splits partition the data, a point
+  that isolates in a **short path** (few splits) is easy to separate and therefore anomalous.
 
-  _(your answer here)_
+  Statistical Baseline: A multiplier from the std deviation working as a hard cutoff
+  IF: Randomly splits data, less splits means it's an anomaly
 
-## Chunk 21 — IF limitations + threshold tuning
+## Chunk 21 — Detector evaluation → pick one for the alerting path
 
 **Interview-critical tier:**
 
-- The **limitations**: false positives when the device legitimately changes regime (a BME280 actually
-  heating up is "anomalous" but not a fault). Name one concrete false-positive scenario and your
-  mitigation.
+- The **evaluation and the decision it produced**: which detector entered the alerting path, on what
+  evidence (false-positive rate on the baseline, detection + latency on injected faults), and the
+  tradeoff. This is the interview-valuable artifact — the decision, not the estimator.
+
+  _(your answer here)_
+
+- The **limitations** of the chosen detector: false positives when the device legitimately changes
+  regime (a BME280 actually heating up is "anomalous" but not a fault). Name one concrete false-positive
+  scenario and your mitigation.
 
   _(your answer here)_
 
@@ -416,7 +431,7 @@ vocabulary — symptom-based alerting, alert fatigue, MTTD vs MTTR, runbooks —
 
   _(your answer here)_
 
-- Why you'd pick IF over a plain **z-score / static threshold** — **and when you wouldn't.**
+- When you'd pick the **statistical baseline** over IF — **and when you wouldn't.**
 
   _(your answer here)_
 
