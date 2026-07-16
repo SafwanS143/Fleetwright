@@ -1,0 +1,4 @@
+paho-mqtt>=2.0
+prometheus_client>=0.20
+numpy>=1.26
+scikit-learn>=1.4

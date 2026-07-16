@@ -1,0 +1,288 @@
+{
+  "uid": "fleet-anomaly",
+  "title": "Fleet — Anomaly Detection",
+  "tags": ["fleet", "anomaly"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "device",
+        "label": "Device",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+        "definition": "label_values(fleet_anomaly_model_ready, device)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(fleet_anomaly_model_ready, device)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "state-timeline",
+      "title": "Anomaly flags — both detectors × channel",
+      "description": "fleet_anomaly_flag for $device: 1 (coloured) when a detector is past its threshold this sample. Two detectors × four channels side by side — this is the Chunk 20 comparison: where they agree and where they don't, which is what Chunk 21 quantifies before picking one for the alerting path.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fleet_anomaly_flag{device=\"$device\"}",
+          "legendFormat": "{{channel}} / {{detector}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 80, "lineWidth": 0 },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "ok", "color": "green", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "ANOMALY", "color": "red", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "rowHeight": 0.9,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }
+      }
+    },
+
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Temperature + statistical band",
+      "description": "fleet_temperature_celsius with the z-score/MAD normal band (fleet_channel_baseline_lower/upper) shaded. A value leaving the band is exactly what the statistical detector's score > 1.0 means, drawn on the signal.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_temperature_celsius{device=\"$device\"}", "legendFormat": "value" },
+        { "refId": "B", "expr": "fleet_channel_baseline_upper{device=\"$device\", channel=\"temperature\"}", "legendFormat": "band upper" },
+        { "refId": "C", "expr": "fleet_channel_baseline_lower{device=\"$device\", channel=\"temperature\"}", "legendFormat": "band lower" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "celsius", "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "band upper" }, "properties": [
+            { "id": "custom.fillBelowTo", "value": "band lower" },
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "custom.fillOpacity", "value": 12 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "band lower" }, "properties": [
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "value" }, "properties": [
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+          ]}
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Temperature — anomaly scores",
+      "description": "fleet_anomaly_score for both detectors, normalized so 1.0 is each detector's trip line (red). Watch both climb past 1.0 when the channel is perturbed; the shapes differ because the estimators differ — that difference is the Chunk 21 evaluation.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 7 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"temperature\", detector=\"zscore\"}", "legendFormat": "z-score" },
+        { "refId": "B", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"temperature\", detector=\"iforest\"}", "legendFormat": "isolation forest" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Humidity + statistical band",
+      "description": "fleet_humidity_percent with the z-score/MAD normal band shaded.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_humidity_percent{device=\"$device\"}", "legendFormat": "value" },
+        { "refId": "B", "expr": "fleet_channel_baseline_upper{device=\"$device\", channel=\"humidity\"}", "legendFormat": "band upper" },
+        { "refId": "C", "expr": "fleet_channel_baseline_lower{device=\"$device\", channel=\"humidity\"}", "legendFormat": "band lower" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "humidity", "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "band upper" }, "properties": [
+            { "id": "custom.fillBelowTo", "value": "band lower" },
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "custom.fillOpacity", "value": 12 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "band lower" }, "properties": [
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "value" }, "properties": [
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+          ]}
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Humidity — anomaly scores",
+      "description": "Normalized anomaly scores for both detectors; 1.0 (red) is the trip line.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"humidity\", detector=\"zscore\"}", "legendFormat": "z-score" },
+        { "refId": "B", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"humidity\", detector=\"iforest\"}", "legendFormat": "isolation forest" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Pressure + statistical band",
+      "description": "fleet_pressure_hpa with the z-score/MAD normal band shaded.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 21 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_pressure_hpa{device=\"$device\"}", "legendFormat": "value" },
+        { "refId": "B", "expr": "fleet_channel_baseline_upper{device=\"$device\", channel=\"pressure\"}", "legendFormat": "band upper" },
+        { "refId": "C", "expr": "fleet_channel_baseline_lower{device=\"$device\", channel=\"pressure\"}", "legendFormat": "band lower" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "pressurehpa", "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "band upper" }, "properties": [
+            { "id": "custom.fillBelowTo", "value": "band lower" },
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "custom.fillOpacity", "value": 12 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "band lower" }, "properties": [
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "value" }, "properties": [
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+          ]}
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Pressure — anomaly scores",
+      "description": "Normalized anomaly scores for both detectors; 1.0 (red) is the trip line.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 21 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"pressure\", detector=\"zscore\"}", "legendFormat": "z-score" },
+        { "refId": "B", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"pressure\", detector=\"iforest\"}", "legendFormat": "isolation forest" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Motion (accel magnitude) + statistical band",
+      "description": "fleet_accel_magnitude_g with the z-score/MAD normal band shaded. A shake pushes |a| well outside the ~1 g band.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_accel_magnitude_g{device=\"$device\"}", "legendFormat": "value" },
+        { "refId": "B", "expr": "fleet_channel_baseline_upper{device=\"$device\", channel=\"accel_magnitude\"}", "legendFormat": "band upper" },
+        { "refId": "C", "expr": "fleet_channel_baseline_lower{device=\"$device\", channel=\"accel_magnitude\"}", "legendFormat": "band lower" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "band upper" }, "properties": [
+            { "id": "custom.fillBelowTo", "value": "band lower" },
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "custom.fillOpacity", "value": 12 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "band lower" }, "properties": [
+            { "id": "custom.lineWidth", "value": 0 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "value" }, "properties": [
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+          ]}
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Motion — anomaly scores",
+      "description": "Normalized anomaly scores for both detectors; 1.0 (red) is the trip line.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 28 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"accel_magnitude\", detector=\"zscore\"}", "legendFormat": "z-score" },
+        { "refId": "B", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"accel_magnitude\", detector=\"iforest\"}", "legendFormat": "isolation forest" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

@@ -24,6 +24,22 @@ services:
     depends_on:
       - mosquitto   # start-order only; the bridge's loop_forever() reconnects if the broker lags
 
+  anomaly:
+    build: ./anomaly
+    restart: unless-stopped
+    environment:
+      FLEET_BROKER_HOST: mosquitto   # same broker; it's a second subscriber, not in the bridge's path
+      FLEET_BROKER_PORT: "1883"
+      FLEET_METRICS_PORT: "8001"
+      # Warm-up + detector knobs. Chunk 21 tunes these. ~300 samples ≈ 30s at 10 Hz before fitting.
+      FLEET_ANOMALY_BASELINE: "300"
+      FLEET_ZSCORE_SIGMA: "3.5"
+      FLEET_IF_CONTAMINATION: "0.01"
+    expose:
+      - "8001"   # only Prometheus scrapes it, over the internal network
+    depends_on:
+      - mosquitto
+
   prometheus:
     image: prom/prometheus:v2.54.1
     restart: unless-stopped
@@ -35,6 +51,7 @@ services:
       - "9090:9090"   # expose the Prometheus UI/targets page on the host for debugging
     depends_on:
       - bridge
+      - anomaly
 
   grafana:
     image: grafana/grafana:11.2.0

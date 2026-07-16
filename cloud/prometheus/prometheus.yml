@@ -19,6 +19,15 @@ scrape_configs:
         labels:
           service: mqtt-prometheus-bridge
 
+  # Anomaly detector (Chunk 20): a second subscriber exposing per-channel anomaly scores. Same 5s
+  # cadence as the bridge so scores line up with the telemetry they're derived from.
+  - job_name: fleet-anomaly
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["anomaly:8001"]   # docker-network DNS name of the anomaly service
+        labels:
+          service: anomaly-detector
+
   # Prometheus scraping itself — free `up`/TSDB health, and a sanity target while wiring the stack.
   - job_name: prometheus
     static_configs:
