@@ -34,6 +34,11 @@ SIGMA = float(os.environ.get("FLEET_ZSCORE_SIGMA", "3.5"))            # z-score 
 CONTAMINATION = float(os.environ.get("FLEET_IF_CONTAMINATION", "0.01"))
 N_ESTIMATORS = int(os.environ.get("FLEET_IF_ESTIMATORS", "100"))
 
+# Chunk 21 decision: the z-score/MAD baseline enters the alerting path (0.000 FP vs IF's 5.6% on a 10 Hz
+# stream — the deciding axis; see evaluate.py and docs/detector-evaluation.md). Both scores stay exported
+# for the dashboard; Chunk 22 wires *this* detector's flag to paging.
+ALERTING_DETECTOR = os.environ.get("FLEET_ALERTING_DETECTOR", "zscore")
+
 # ── metrics ───────────────────────────────────────────────────────────────
 # Normalized so 1.0 is each detector's own trip line (see detectors.py); comparable on one axis.
 ANOMALY_SCORE = Gauge(

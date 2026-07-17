@@ -48,6 +48,24 @@ Chunk 21 evaluates them on false positives / detection latency and picks one.
 - Detector knobs (baseline size, z-score sigma, IF contamination) are env vars on the `anomaly` service
   in [`docker-compose.yml`](docker-compose.yml) — Chunk 21 tuning is a config change, not a rebuild.
 
+## Detector evaluation → pick one (Chunk 21)
+
+[`anomaly/evaluate.py`](anomaly/evaluate.py) scores **both** detectors offline (no Pi, no broker) on
+labelled synthetic data from the same generator, measuring false-positive rate on clean data and
+detection + latency on injected faults, then sweeps each one's sensitivity knob.
+
+```bash
+python anomaly/evaluate.py          # prints per-channel tables + the decision summary
+```
+
+**Decision: the z-score / MAD baseline enters the alerting path** — 0.000 FP vs the Isolation Forest's
+5.6% (17% on humidity), which on a 10 Hz stream is the deciding axis; both detect clear faults at
+~one-sample latency. Full evidence, limitations (periodic-channel misses, regime-change false positives),
+the contamination/threshold tradeoff, and when IF *would* win (multivariate joint anomalies) are written
+up in [`docs/detector-evaluation.md`](../docs/detector-evaluation.md). The chosen detector is recorded as
+`ALERTING_DETECTOR` in [`anomaly/anomaly_service.py`](anomaly/anomaly_service.py); Chunk 22 wires its flag
+to paging.
+
 ## SLIs / SLOs (Chunk 18)
 
 [`prometheus/rules/fleet_slos.yml`](prometheus/rules/fleet_slos.yml) defines the SLIs as `fleet:...`
