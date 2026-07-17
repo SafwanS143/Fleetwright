@@ -419,21 +419,21 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
   evidence (false-positive rate on the baseline, detection + latency on injected faults), and the
   tradeoff. This is the interview-valuable artifact — the decision, not the estimator.
 
-  _(your answer here)_
+  The evaluation was done by talking realistic measurements labelled as normal, as well as labelled injected anomalies, and using both detection methods to determine which one is better for alerting. Z-score is better for alerting since it has much less false positives. On a 10Hz output system, the false positives carry more weight than detections.
 
 - The **limitations** of the chosen detector: false positives when the device legitimately changes
   regime (a BME280 actually heating up is "anomalous" but not a fault). Name one concrete false-positive
   scenario and your mitigation.
 
-  _(your answer here)_
+  The BME280 sensor itself heating up is a false positive that is difficult to detect with a frozen z-score multiple. 2 ways of fixing it are only alerting if N/M (for example 10/15) of the last samples were anomalous, or re-baselining after a certain period of time. Re-baselining can cause drift if done aggresively, but it is the stonger solution
 
 - How **contamination / threshold** trades false positives vs. missed detections.
 
-  _(your answer here)_
+  This is the classic problem of being more sensitive to anomalies with greater FP or less FP with more missed anomalies. These are tradeoffs that must be made with the MTTD in mind.
 
 - When you'd pick the **statistical baseline** over IF — **and when you wouldn't.**
 
-  _(your answer here)_
+  The statistical baseline is very strong for per metric (1-D) statistics. IF has a higher FP rate on 1-D applications, but when multiple variables come into play, IF is a stronger tool.
 
 ## Chunk 22 — Alerting: severity + routing
 
