@@ -52,6 +52,31 @@ services:
     depends_on:
       - bridge
       - anomaly
+      - alertmanager   # start-order only; Prometheus retries the alertmanager connection on its own
+
+  # Chunk 22 — routing/dedup/silencing layer. Prometheus fires alerts *at* it (see prometheus.yml
+  # `alerting:`); Alertmanager groups them, applies the routing tree, and notifies Slack + the sink.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/templates:/etc/alertmanager/templates:ro
+      # Slack webhook secret (gitignored). Absent on a fresh clone → Slack is skipped, sink still fires.
+      - ./alertmanager/secrets:/etc/alertmanager/secrets:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"   # Alertmanager UI: see grouped/routed alerts and set silences
+    depends_on:
+      - alert-sink
+
+  # Always-on local receiver so alerts are visible (with severity + attribution) without any external
+  # webhook. Wired into every Alertmanager receiver; also the future seam for the Chunk 24 incident store.
+  alert-sink:
+    build: ./alertmanager/sink
+    restart: unless-stopped
+    expose:
+      - "9095"   # only Alertmanager posts to it, over the internal network
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -75,3 +100,4 @@ volumes:
   mosquitto-data:
   prometheus-data:
   grafana-data:
+  alertmanager-data:   # Alertmanager's silences + notification state survive down/up

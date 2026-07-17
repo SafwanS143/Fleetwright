@@ -2,9 +2,13 @@
 #
 # Recording rules precompute each SLI into a first-class `fleet:...` series, so dashboards and (later)
 # burn-rate math read one cheap metric instead of re-deriving it. Alert rules encode the SLO targets;
-# there's no Alertmanager yet (routing to Slack lands in Chunk 22), so for now a breach simply shows up
-# on Prometheus /alerts as pending → firing. The thresholds live here so that wiring is a config change,
-# not a code change.
+# Prometheus evaluates them and hands firing alerts to Alertmanager (Chunk 22), which routes them by
+# `severity` + `team` to Slack/the sink — see alertmanager/alertmanager.yml. The thresholds and the
+# routing labels live here so who-gets-paged is a config change, not a code change.
+#
+# Every alert carries: `severity` (routing urgency), `team` (owning route), `sli` (which objective), and
+# a `runbook_url` annotation (the fix — runbooks themselves land in Chunk 25). Alerts fire on SYMPTOMS
+# (SLO breach / sustained anomaly), never on raw values.
 
 groups:
   # ── SLIs as recording rules ─────────────────────────────────────────────────
@@ -40,30 +44,36 @@ groups:
           /
           (sum(rate(fleet_messages_total[5m])) + (sum(rate(fleet_message_errors_total[5m])) or vector(0)))
 
-  # ── SLOs as alert thresholds (surface on /alerts; routed in Chunk 22) ────────
+  # ── SLOs as alert thresholds (fired at Alertmanager; routed by severity + team) ──
   - name: fleet_slo_alerts
     rules:
-      # Freshness SLO: each device fresh (< 10s) — page per device so attribution is automatic.
+      # Freshness SLO: each device fresh (< 10s) — page per device so attribution is automatic. A single
+      # device going quiet is the device team's problem, not a fleet-wide page → warning + device-reliability.
       - alert: FleetDeviceStale
         expr: fleet:device_freshness_seconds > 10
         for: 30s
         labels:
           severity: warning
           sli: freshness
+          team: device-reliability
         annotations:
           summary: "Device {{ $labels.device }} telemetry is stale"
           description: "No telemetry from {{ $labels.device }} for {{ $value | humanizeDuration }} (SLO: < 10s)."
+          runbook_url: "docs/runbooks/device-offline.md"
 
-      # Availability SLO: >= 95% of the fleet fresh. Tolerates a single device blip; a wider dip is systemic.
+      # Availability SLO: >= 95% of the fleet fresh. Tolerates a single device blip; a wider dip is
+      # systemic → critical, owned by the platform team that runs the ingest path.
       - alert: FleetAvailabilityBelowSLO
         expr: fleet:availability:ratio < 0.95
         for: 1m
         labels:
           severity: critical
           sli: availability
+          team: platform
         annotations:
           summary: "Fleet availability below SLO"
           description: "Only {{ $value | humanizePercentage }} of devices are fresh (SLO: >= 95%)."
+          runbook_url: "docs/runbooks/fleet-availability.md"
 
       # Error-rate SLO: < 0.1% malformed frames over 5m. Machine-generated NDJSON should essentially
       # always parse, so anything higher points at framing corruption (UART/serial), not normal load.
@@ -73,9 +83,11 @@ groups:
         labels:
           severity: warning
           sli: error_rate
+          team: platform
         annotations:
           summary: "Ingest error rate above SLO"
           description: "Malformed-frame ratio is {{ $value | humanizePercentage }} over 5m (SLO: < 0.1%)."
+          runbook_url: "docs/runbooks/ingest-errors.md"
 
       # Operational alert, not one of the three SLOs: if the bridge is unscrapeable, every SLI above is
       # blind — a different, higher-severity failure than any single device going quiet.
@@ -85,6 +97,31 @@ groups:
         labels:
           severity: critical
           sli: pipeline
+          team: platform
         annotations:
           summary: "MQTT to Prometheus bridge is down"
           description: "Prometheus cannot scrape the bridge; freshness / availability / error SLIs are all blind."
+          runbook_url: "docs/runbooks/ingest-pipeline-down.md"
+
+  # ── Anomaly-based alert (Chunk 22): fires on the detector Chunk 21 put on the paging path ────────────
+  - name: fleet_anomaly_alerts
+    rules:
+      # Fires on the z-score/MAD detector only (detector="zscore") — the one the Chunk 21 evaluation chose
+      # for its 0.000 false-positive rate (see docs/detector-evaluation.md); Isolation Forest stays
+      # dashboard-only. This alerts on the detector's SYMPTOM flag, never on a raw channel value.
+      #
+      # The flag is a per-sample 1/0 at ~10 Hz. Requiring `avg_over_time(...[1m]) > 0.5` means the channel
+      # must read anomalous for the MAJORITY of a 1-minute window before this even goes pending — the
+      # sustained-breach / dwell mitigation from the evaluation, so a single-sample blip or a brief
+      # legitimate wobble never pages. `for: 30s` adds a second hold on top. Chunk 23 tightens this further.
+      - alert: FleetChannelAnomaly
+        expr: avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5
+        for: 30s
+        labels:
+          severity: warning
+          sli: anomaly
+          team: device-reliability
+        annotations:
+          summary: "Anomaly on {{ $labels.device }} / {{ $labels.channel }}"
+          description: "{{ $labels.channel }} on {{ $labels.device }} has been anomalous (z-score/MAD, sustained over 1m). Confirm it's a fault, not a legitimate regime change (see runbook)."
+          runbook_url: "docs/runbooks/channel-anomaly.md"

@@ -1,0 +1,22 @@
+{{/* Chunk 22 — structured Slack message shared by every receiver. Attribution (device/channel/owner)
+      is carried on the alert LABELS the Prometheus rules set, so the message says what broke, where,
+      how bad, and who owns it — not just a raw metric value. */}}
+
+{{ define "fleet.slack.title" -}}
+[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.severity | toUpper }} — {{ .CommonLabels.alertname }}
+{{- end }}
+
+{{ define "fleet.slack.text" -}}
+{{ range .Alerts -}}
+*{{ .Annotations.summary }}*
+{{ if .Labels.device }}• Device: `{{ .Labels.device }}`{{ end }}{{ if .Labels.channel }}  • Channel: `{{ .Labels.channel }}`{{ end }}
+• Severity: `{{ .Labels.severity }}`{{ if .Labels.sli }}  • SLI: `{{ .Labels.sli }}`{{ end }}{{ if .Labels.team }}  • Owner: `{{ .Labels.team }}`{{ end }}
+{{ .Annotations.description }}
+{{ if .Annotations.runbook_url }}• Runbook: {{ .Annotations.runbook_url }}
+{{ end }}
+{{ end -}}
+{{- end }}
+
+{{ define "fleet.slack.color" -}}
+{{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}{{ else }}good{{ end }}
+{{- end }}

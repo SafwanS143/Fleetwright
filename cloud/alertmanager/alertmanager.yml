@@ -1,0 +1,93 @@
+# Chunk 22 — Alertmanager: severity + routing.
+#
+# Prometheus decides *when* an alert fires (the rules in prometheus/rules/); Alertmanager decides *who*
+# hears about it and *how loud*. Splitting those two jobs is exactly why Alertmanager beats hand-rolled
+# webhook code: grouping, dedup, silences, inhibition and per-route routing are config here, not code we
+# maintain — and the same tree serves Slack, PagerDuty, or anything else by adding a receiver.
+
+global:
+  resolve_timeout: 5m
+  # The Slack webhook is a secret, so it lives in a mounted file (gitignored), not in this config.
+  # Alertmanager reads it at *notify* time, so if the file is absent the stack still starts, Slack sends
+  # are simply skipped, and the always-on local `alert-sink` receiver still shows every alert — i.e. the
+  # whole path is demonstrable with zero external setup. Drop a webhook in the file to light up Slack.
+  slack_api_url_file: /etc/alertmanager/secrets/slack_api_url
+
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+# ── Routing tree ──────────────────────────────────────────────────────────────
+# Matched top-down; the first matching leaf wins (no `continue` here, so each alert lands in exactly one
+# receiver). The group_*/repeat_interval knobs already give basic dedup + suppression — a burst of the
+# same alert collapses into one message; Chunk 23 tightens these and adds inhibition rules.
+route:
+  receiver: fleet-default              # catch-all: anything that matches no leaf still goes somewhere
+  group_by: ["alertname", "device"]    # one notification per (alert, device) — attribution stays intact
+  group_wait: 30s                      # brief hold to batch related alerts into the first notification
+  group_interval: 5m                   # min gap before a *changed* group re-notifies
+  repeat_interval: 4h                  # a still-firing group re-pings at most this often (anti-fatigue)
+  routes:
+    # Severity first: a critical is a wake-someone-up event no matter which team owns it.
+    - matchers:
+        - severity = "critical"
+      receiver: fleet-critical
+      group_wait: 10s                  # page criticals faster than the 30s default
+
+    # Warnings route to the *owning team's* channel, not the pager.
+    - matchers:
+        - severity = "warning"
+        - team = "device-reliability"
+      receiver: device-reliability
+
+    - matchers:
+        - severity = "warning"
+      receiver: fleet-warning
+
+# ── Receivers ─────────────────────────────────────────────────────────────────
+# Every receiver fans out to BOTH the local sink (so alerts are always visible in `docker compose logs`)
+# and a Slack channel (live once the webhook secret is in place). Same structured message everywhere;
+# only the destination channel changes per severity/owner.
+receivers:
+  - name: fleet-default
+    webhook_configs:
+      - url: http://alert-sink:9095/alert
+        send_resolved: true
+    slack_configs:
+      - channel: "#fleet-alerts"
+        send_resolved: true
+        title: '{{ template "fleet.slack.title" . }}'
+        text: '{{ template "fleet.slack.text" . }}'
+        color: '{{ template "fleet.slack.color" . }}'
+
+  - name: fleet-critical
+    webhook_configs:
+      - url: http://alert-sink:9095/alert
+        send_resolved: true
+    slack_configs:
+      - channel: "#fleet-critical"
+        send_resolved: true
+        title: '{{ template "fleet.slack.title" . }}'
+        text: '{{ template "fleet.slack.text" . }}'
+        color: '{{ template "fleet.slack.color" . }}'
+
+  - name: fleet-warning
+    webhook_configs:
+      - url: http://alert-sink:9095/alert
+        send_resolved: true
+    slack_configs:
+      - channel: "#fleet-warnings"
+        send_resolved: true
+        title: '{{ template "fleet.slack.title" . }}'
+        text: '{{ template "fleet.slack.text" . }}'
+        color: '{{ template "fleet.slack.color" . }}'
+
+  - name: device-reliability
+    webhook_configs:
+      - url: http://alert-sink:9095/alert
+        send_resolved: true
+    slack_configs:
+      - channel: "#fleet-device-reliability"
+        send_resolved: true
+        title: '{{ template "fleet.slack.title" . }}'
+        text: '{{ template "fleet.slack.text" . }}'
+        color: '{{ template "fleet.slack.color" . }}'

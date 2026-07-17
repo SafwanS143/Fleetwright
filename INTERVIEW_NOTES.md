@@ -441,12 +441,6 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
 
 - Why **severity + routing** matters (getting the right signal to the right owner, not one undifferentiated firehose).
 
-  _(your answer here)_
-
-- Why **symptom / SLO-based** firing beats cause-based firing.
-
-  _(your answer here)_
-
 ## Chunk 23 — Dedup + suppression
 
 **Interview-critical tier:**

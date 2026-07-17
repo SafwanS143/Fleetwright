@@ -1,0 +1,15 @@
+https://hooks.slack.com/services/REPLACE/WITH/YOUR-WEBHOOK
+
+# ── How to enable Slack ───────────────────────────────────────────────────────
+# Alertmanager reads the webhook URL from a file so it never lands in git. To turn Slack on:
+#
+#   1. Create an Incoming Webhook in Slack (or any workspace) and copy the URL.
+#   2. Put JUST the URL (no comments, single line) in a sibling file named `slack_api_url`:
+#
+#        mkdir -p secrets
+#        printf '%s' 'https://hooks.slack.com/services/XXX/YYY/ZZZ' > secrets/slack_api_url
+#
+#   3. Restart Alertmanager:  docker compose up -d alertmanager
+#
+# `secrets/` is gitignored, so the real URL is never committed. Until then, Slack sends are skipped and
+# every alert still shows up in the local alert-sink (`docker compose logs -f alert-sink`).

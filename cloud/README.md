@@ -75,6 +75,39 @@ Targets and rationale are documented in the [root README](../README.md#slis--slo
 - Recording rules / SLI series: http://localhost:9090/graph (e.g. `fleet:availability:ratio`)
 - SLO alerts (pending/firing): http://localhost:9090/alerts
 
-There's no Alertmanager yet — breaches only surface on the Prometheus **/alerts** page. Routing them to
-Slack with severity, dedup, and suppression is Chunk 22. After editing the rules, reload Prometheus:
-`docker compose kill -s SIGHUP prometheus` (or restart the container).
+After editing the rules, reload Prometheus: `docker compose kill -s SIGHUP prometheus` (or restart it).
+
+## Alerting: severity + routing (Chunk 22)
+
+Prometheus decides **when** an alert fires; [Alertmanager](alertmanager/alertmanager.yml) decides **who**
+hears it and **how loud**. Prometheus (`alerting:` in [prometheus.yml](prometheus/prometheus.yml)) pushes
+firing alerts to Alertmanager, which groups them and walks a routing tree:
+
+- `severity=critical` → **fleet-critical** (fast `group_wait`, the pager channel)
+- `severity=warning` + `team=device-reliability` → **device-reliability** (the owning team's channel)
+- `severity=warning` (anything else) → **fleet-warning**
+- catch-all → **fleet-default**
+
+Every alert rule carries `severity`, `team` (owner), `sli`, and a `runbook_url` — routing and attribution
+are labels on the alert, not values baked into notification code. Alerts fire on **symptoms** (SLO breach
+or a *sustained* anomaly from the Chunk 21 detector, `avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5`),
+never on raw sensor values.
+
+**Why Alertmanager instead of hand-rolled webhook code:** grouping, dedup, silences, inhibition, and
+per-route fan-out are all config, not code we maintain — and the same tree serves Slack, PagerDuty, or a
+custom webhook by adding a receiver. It's the natural home for Chunk 23's dedup/suppression tuning too.
+
+**Every receiver notifies two places:** a Slack channel *and* a local `alert-sink` container. Slack needs
+a webhook this project doesn't have yet, so the sink (stdlib, [alertmanager/sink/](alertmanager/sink/))
+makes the whole path demonstrable with **zero external setup** — it prints each routed alert with severity
++ attribution to `docker compose logs alert-sink`. (It's also the seam Chunk 24's incident store will hang
+off.) To turn Slack on, drop your webhook URL into `alertmanager/secrets/slack_api_url` — see
+[`slack_api_url.example`](alertmanager/slack_api_url.example). Absent → Slack is skipped, sink still fires.
+
+- Alertmanager UI (grouped alerts, silences): http://localhost:9093
+- See it fire end to end: feed one device, stop it, watch the sink —
+  ```bash
+  docker compose up -d --build
+  python tools/fake_telemetry.py --devices 1 &   # register a device, then Ctrl-C after ~15s
+  docker compose logs -f alert-sink              # FleetDeviceStale (+availability) route in ~1 min
+  ```
