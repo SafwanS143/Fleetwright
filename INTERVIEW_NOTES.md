@@ -441,6 +441,8 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
 
 - Why **severity + routing** matters (getting the right signal to the right owner, not one undifferentiated firehose).
 
+  A pager should always include how important the alert is (whether someone needs to respond immediately or during working hours) and which team is responsible for fixing the alert.
+
 ## Chunk 23 — Dedup + suppression
 
 **Interview-critical tier:**
