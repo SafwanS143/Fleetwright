@@ -479,12 +479,18 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
 
 - Walk the **architecture diagram** end to end — every hop, and what fails at each.
 
-  _(your answer here)_
+  The Nucleo 64: Reads sensor data, sends to the Pi over UART, adds seq numbers, sends heartbeats
+
+  The gateway (Pi): Parses JSON, buffers missed lines, publishes over MQTT broker
+
+  Cloud: Subcribes to broker, graphs and feeds dashboard and prometheus, which checks SLOs and rules.
+
+  Freshness is the main SLO, showing the last time the device was sending data
 
 **One-liner tier:**
 
 - What a **runbook** is for, and how it cuts MTTR.
 
-  _(your answer here)_
+  A runbook is essentially a book for the SREs to know what to do based on the alerts being shown and error logs occurring. It helps to decrease MTTR by specifying faults
 
 <!-- Phases 5-7 stubs added as you reach them. -->
