@@ -517,7 +517,7 @@ end, not the writeup itself._
   faults), not the raw device count, is what the reliability stack is actually exercising. Say this
   honestly in interviews.
 
-  The whole point of an SRE
+  The whole point of a reliability stack is to monitor, alert, and help debug incidents. Whether the data comes from a real device or simulated scripts doesn't matter much. The one real device is to learn the actual embedded gap and pub/sub flows, having simulated data doesn't affect the cloud reliability.
 
 ## Chunk 27 — Fleet overview dashboard
 
