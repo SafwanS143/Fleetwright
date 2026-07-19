@@ -450,7 +450,7 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
 - How the design stops **flapping** (dedup + a suppression window), and **why the window is the length
   it is** — the tradeoff behind the number.
 
-  _(your answer here)_
+  Flapping is when errors keep appearing on and off again. Deduping makes sure that duplicates aren't shown using IDs and a timer of 1 min for an error to be alerted and 2 mins to be declared resolved. Only alerts every 5 mins are paged as a hard window, regardless of alert type.
 
 **One-liner tier:**
 
@@ -464,13 +464,14 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
 
 - **MTTD vs MTTR** — what each measures, and which your design optimizes.
 
-  _(your answer here)_
+  MTTR - Mean time to recover, this is when the system restarts and heals itself.
+  MTTD - Mean time to detect, this is the first stage of MTTR and this is what our design optimizes. Having alerting and freshness optimizes this.
 
 **One-liner tier:**
 
 - The **incident lifecycle**: open on trip, close on recovery, timeline of what happened in between.
 
-  _(your answer here)_
+  The incident lifecycle is opened when detected, closed when recovered, and in between it could be opened, reopened, resolved or expired, depending on the sitation of the ticket
 
 ## Chunk 25 — Runbooks + finalize architecture diagram
 
