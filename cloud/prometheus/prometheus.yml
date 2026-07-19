@@ -35,6 +35,15 @@ scrape_configs:
         labels:
           service: anomaly-detector
 
+  # Incident store (Chunk 24): fleet_incident_active drives the Grafana state timeline; open counts,
+  # opened/reopened totals and the TTR histogram ride along. Incidents move at human speed, so the
+  # 15s global interval is plenty — no override.
+  - job_name: fleet-incidents
+    static_configs:
+      - targets: ["incidents:9096"]   # docker-network DNS name of the incident store
+        labels:
+          service: incident-store
+
   # Prometheus scraping itself — free `up`/TSDB health, and a sanity target while wiring the stack.
   - job_name: prometheus
     static_configs:

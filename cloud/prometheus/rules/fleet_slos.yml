@@ -49,9 +49,16 @@ groups:
     rules:
       # Freshness SLO: each device fresh (< 10s) — page per device so attribution is automatic. A single
       # device going quiet is the device team's problem, not a fleet-wide page → warning + device-reliability.
+      #
+      # keep_firing_for (Chunk 23): a device in a reconnect loop resolves the instant ONE message lands,
+      # then re-breaches 10s later — without hysteresis that's a resolve/re-fire pair every cycle. Holding
+      # the alert 1m past recovery fuses a flapping device into one continuous alert (and so one incident
+      # in Chunk 24). Cost: a genuinely recovered device shows "resolved" 1m late — cheap, since resolution
+      # isn't a paging event.
       - alert: FleetDeviceStale
         expr: fleet:device_freshness_seconds > 10
         for: 30s
+        keep_firing_for: 1m
         labels:
           severity: warning
           sli: freshness
@@ -113,10 +120,21 @@ groups:
       # The flag is a per-sample 1/0 at ~10 Hz. Requiring `avg_over_time(...[1m]) > 0.5` means the channel
       # must read anomalous for the MAJORITY of a 1-minute window before this even goes pending — the
       # sustained-breach / dwell mitigation from the evaluation, so a single-sample blip or a brief
-      # legitimate wobble never pages. `for: 30s` adds a second hold on top. Chunk 23 tightens this further.
+      # legitimate wobble never pages. `for: 30s` adds a second hold on top.
+      #
+      # Chunk 23 — flap-damping is asymmetric by design: slow to fire (the dwell above), slow to clear
+      # (`keep_firing_for: 2m`). An intermittent fault — loose wire, marginal sensor — oscillates in/out
+      # of the anomalous band; without hysteresis every dip below threshold emits resolved + a fresh
+      # firing. Holding 2m bridges gaps shorter than that, so a fault flapping on/off every ~15s is ONE
+      # continuous alert (and one Chunk 24 incident with one open + one close, not a stack of two-minute
+      # incidents). Why 2m: comfortably longer than the flap cycles we see (seconds to ~1m), and an
+      # intermittent fault that stays quiet for a full 2m is fairly called a separate episode. The cost
+      # is symmetric: a real recovery reads "resolved" 2m late — fine, recovery isn't the page we
+      # optimize for detection time.
       - alert: FleetChannelAnomaly
         expr: avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5
         for: 30s
+        keep_firing_for: 2m
         labels:
           severity: warning
           sli: anomaly

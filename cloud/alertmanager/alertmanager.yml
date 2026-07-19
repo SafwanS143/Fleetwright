@@ -1,4 +1,7 @@
 # Chunk 22 — Alertmanager: severity + routing.
+# Chunk 23 — dedup + suppression: the group_*/repeat_interval windows below plus the inhibit_rules at
+#            the bottom. Flap-damping at the *rule* level (dwell on the way in, keep_firing_for on the
+#            way out) lives in prometheus/rules/fleet_slos.yml — see the comments there.
 #
 # Prometheus decides *when* an alert fires (the rules in prometheus/rules/); Alertmanager decides *who*
 # hears about it and *how loud*. Splitting those two jobs is exactly why Alertmanager beats hand-rolled
@@ -18,14 +21,31 @@ templates:
 
 # ── Routing tree ──────────────────────────────────────────────────────────────
 # Matched top-down; the first matching leaf wins (no `continue` here, so each alert lands in exactly one
-# receiver). The group_*/repeat_interval knobs already give basic dedup + suppression — a burst of the
-# same alert collapses into one message; Chunk 23 tightens these and adds inhibition rules.
+# receiver).
+#
+# Chunk 23 — the three windows below ARE the dedup + suppression design, so each length has a reason:
+#   * Dedup is identity-based and free: alerts with the same label set are one alert, and `group_by`
+#     collapses everything sharing (alertname, device) into ONE notification — 4 anomalous channels on
+#     one device is one message, not four. Channel detail stays in the message body, so nothing is lost.
+#   * group_wait 30s — how long a NEW group holds before its first notification, so related alerts that
+#     trip within seconds of each other ride along in one message. Longer would eat into detection time
+#     (MTTD) on first notice; shorter defeats the batching. 30s ≈ one rule-evaluation `for:` period.
+#   * group_interval 5m — the SUPPRESSION WINDOW: once a group has notified, any further change in it
+#     (new alert joins, member resolves, flap re-fires) waits at least 5m to speak again. This is the
+#     backstop that turns a worst-case flapping alert into ≤1 message per 5m instead of 100s. Why 5m:
+#     our fault windows (broker restart, sensor reseat, injected faults) live on the ~1–15m scale — a
+#     tighter window (1m) would re-ping mid-incident with no new information a human could act on, and
+#     a looser one (30m+) would hide a genuinely *changed* situation (a second device joining a group).
+#   * repeat_interval 4h — a still-firing, unchanged group re-pings at most every 4h: long enough that
+#     an acknowledged, being-worked incident doesn't nag, short enough that an alert can't stay silently
+#     red for a whole day because its one notification got missed. (PagerDuty-style ack/escalate would
+#     replace this; with Slack, a periodic re-ping is the honest fallback.)
 route:
   receiver: fleet-default              # catch-all: anything that matches no leaf still goes somewhere
   group_by: ["alertname", "device"]    # one notification per (alert, device) — attribution stays intact
-  group_wait: 30s                      # brief hold to batch related alerts into the first notification
-  group_interval: 5m                   # min gap before a *changed* group re-notifies
-  repeat_interval: 4h                  # a still-firing group re-pings at most this often (anti-fatigue)
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
   routes:
     # Severity first: a critical is a wake-someone-up event no matter which team owns it.
     - matchers:
@@ -44,13 +64,16 @@ route:
       receiver: fleet-warning
 
 # ── Receivers ─────────────────────────────────────────────────────────────────
-# Every receiver fans out to BOTH the local sink (so alerts are always visible in `docker compose logs`)
-# and a Slack channel (live once the webhook secret is in place). Same structured message everywhere;
-# only the destination channel changes per severity/owner.
+# Every receiver fans out to the local sink (alerts always visible in `docker compose logs`), the
+# incident store (Chunk 24: `firing` opens an incident, `resolved` closes it — send_resolved is
+# load-bearing there), and a Slack channel (live once the webhook secret is in place). Same structured
+# message everywhere; only the destination channel changes per severity/owner.
 receivers:
   - name: fleet-default
     webhook_configs:
       - url: http://alert-sink:9095/alert
+        send_resolved: true
+      - url: http://incidents:9096/alert
         send_resolved: true
     slack_configs:
       - channel: "#fleet-alerts"
@@ -63,6 +86,8 @@ receivers:
     webhook_configs:
       - url: http://alert-sink:9095/alert
         send_resolved: true
+      - url: http://incidents:9096/alert
+        send_resolved: true
     slack_configs:
       - channel: "#fleet-critical"
         send_resolved: true
@@ -73,6 +98,8 @@ receivers:
   - name: fleet-warning
     webhook_configs:
       - url: http://alert-sink:9095/alert
+        send_resolved: true
+      - url: http://incidents:9096/alert
         send_resolved: true
     slack_configs:
       - channel: "#fleet-warnings"
@@ -85,9 +112,29 @@ receivers:
     webhook_configs:
       - url: http://alert-sink:9095/alert
         send_resolved: true
+      - url: http://incidents:9096/alert
+        send_resolved: true
     slack_configs:
       - channel: "#fleet-device-reliability"
         send_resolved: true
         title: '{{ template "fleet.slack.title" . }}'
         text: '{{ template "fleet.slack.text" . }}'
         color: '{{ template "fleet.slack.color" . }}'
+
+# ── Inhibition (Chunk 23) ─────────────────────────────────────────────────────
+# Suppression along the CAUSALITY chain: while a source alert fires, matching target alerts are muted
+# (they still exist in Prometheus/the UI — they just don't notify). This is what kills the alert storm
+# where one upstream failure makes every downstream symptom page at once. No `equal:` on either rule
+# because the sources are fleet-scoped (no `device` label) and the suppression is intentionally global.
+inhibit_rules:
+  # Bridge down ⇒ Prometheus is blind to every device: freshness climbs for ALL devices, availability
+  # craters, anomaly series go stale — none of which is actionable per-device. Page the one cause
+  # (pipeline, critical), mute the N symptoms it fully explains.
+  - source_matchers: [alertname = "FleetIngestPipelineDown"]
+    target_matchers: [sli =~ "freshness|availability|anomaly"]
+
+  # Fleet availability breached ⇒ >5% of devices are already stale. The per-device Stale warnings are
+  # then redundant detail on the same event — one critical page covers it; per-device attribution is
+  # still on the dashboard and in the incident store, just not in your pocket 20×.
+  - source_matchers: [alertname = "FleetAvailabilityBelowSLO"]
+    target_matchers: [alertname = "FleetDeviceStale"]

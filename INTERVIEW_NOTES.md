@@ -456,7 +456,7 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
 
 - What **alert fatigue** is, and why a noisy alert is worse than no alert.
 
-  _(your answer here)_
+  Alert fatigue is when there's so many alerts that responders don't even care anymore, making it worse than having no alerts and having to check dashboards manually
 
 ## Chunk 24 — Incident store + timeline
 

@@ -69,14 +69,32 @@ services:
       - "9093:9093"   # Alertmanager UI: see grouped/routed alerts and set silences
     depends_on:
       - alert-sink
+      - incidents   # start-order only; Alertmanager retries failed notifications on its own
 
   # Always-on local receiver so alerts are visible (with severity + attribution) without any external
-  # webhook. Wired into every Alertmanager receiver; also the future seam for the Chunk 24 incident store.
+  # webhook. Wired into every Alertmanager receiver alongside the incident store below.
   alert-sink:
     build: ./alertmanager/sink
     restart: unless-stopped
     expose:
       - "9095"   # only Alertmanager posts to it, over the internal network
+
+  # Chunk 24 — SQLite incident store: consumes the same Alertmanager webhook as the sink (firing opens
+  # an incident, resolved closes it), persists to a named volume, and exports fleet_incident_* metrics
+  # that Prometheus scrapes and the Grafana incident-timeline dashboard renders.
+  incidents:
+    build: ./incidents
+    restart: unless-stopped
+    environment:
+      FLEET_INCIDENT_PORT: "9096"
+      FLEET_INCIDENT_DB: /data/incidents.db
+      FLEET_REOPEN_WINDOW: "300"    # re-fire within 5m of resolve = same episode (matches group_interval)
+      FLEET_INCIDENT_EXPIRY: "18000" # force-close after 5h of silence (> repeat_interval, so still-firing
+                                     # alerts always re-notify before this; catches swallowed resolves)
+    volumes:
+      - incidents-data:/data       # incident history must survive down/up — it IS the record
+    ports:
+      - "9096:9096"   # published for humans: /incidents (JSON rows + timelines), /metrics
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -101,3 +119,4 @@ volumes:
   prometheus-data:
   grafana-data:
   alertmanager-data:   # Alertmanager's silences + notification state survive down/up
+  incidents-data:      # the SQLite incident history — the durable record of every incident

@@ -1,0 +1,173 @@
+{
+  "uid": "fleet-incidents",
+  "title": "Fleet — Incidents",
+  "tags": ["fleet", "incidents"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "state-timeline",
+      "title": "Incident timeline — open (red) per alert × device × channel",
+      "description": "fleet_incident_active from the Chunk 24 store: a row exists once an incident has opened for that (alert, device, channel); it holds 1 (OPEN) until the resolved notification closes it. Fleet-scoped incidents (availability, error rate, pipeline) show a blank device — they are one row for the systemic event, not one per device. A flap fused by keep_firing_for / the reopen window shows as ONE continuous red span.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (alertname, device, channel, severity) (fleet_incident_active)",
+          "legendFormat": "{{alertname}} · {{device}} {{channel}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 80, "lineWidth": 0 },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "ok", "color": "green", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "OPEN", "color": "red", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "rowHeight": 0.85,
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }
+      }
+    },
+
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Open incidents",
+      "description": "sum(fleet_incidents_open) — anything non-zero means someone owns a live problem right now.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 9 },
+      "targets": [{ "refId": "A", "expr": "sum(fleet_incidents_open)", "legendFormat": "open" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Open by severity",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 9 },
+      "targets": [{ "refId": "A", "expr": "fleet_incidents_open", "legendFormat": "{{severity}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "orange", "value": 1 }
+          ]}
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "critical" }, "properties": [
+            { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+              { "color": "text", "value": null },
+              { "color": "red", "value": 1 }
+            ]}}
+          ]}
+        ]
+      },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "MTTR (resolved incidents)",
+      "description": "fleet_incident_ttr_seconds sum/count — mean open→resolved duration across every incident the store has closed since it started counting. Includes flap quiet-gaps on purpose: the fault wasn't fixed while it was briefly quiet.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 9 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_incident_ttr_seconds_sum / fleet_incident_ttr_seconds_count", "legendFormat": "MTTR" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] },
+          "noValue": "no closures yet"
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "none", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Incidents opened / reopened (per 10m)",
+      "description": "increase() over the store's counters. Reopens are the flap signal: a reopen means an alert re-fired inside the 5m reopen window and was fused into its previous incident instead of opening a new row.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 9 },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(fleet_incidents_opened_total[10m]))", "legendFormat": "opened" },
+        { "refId": "B", "expr": "sum(increase(fleet_incidents_reopened_total[10m])) or vector(0)", "legendFormat": "reopened (flaps)" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "reopened (flaps)" }, "properties": [
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "opened" }, "properties": [
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+          ]}
+        ]
+      }
+    },
+
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Active incidents (live from the store's metrics; full rows + event timelines at :9096/incidents)",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 15 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_incident_active == 1", "format": "table", "instant": true }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true, "__name__": true, "instance": true, "job": true, "service": true },
+            "indexByName": { "alertname": 0, "severity": 1, "scope": 2, "device": 3, "channel": 4 },
+            "renameByName": {}
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "filterable": false } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "severity" }, "properties": [
+            { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+            { "id": "mappings", "value": [
+              { "type": "value", "options": { "critical": { "text": "critical", "color": "red", "index": 0 } } },
+              { "type": "value", "options": { "warning": { "text": "warning", "color": "orange", "index": 1 } } }
+            ]}
+          ]}
+        ]
+      },
+      "options": { "showHeader": true }
+    }
+  ]
+}

@@ -18,9 +18,12 @@ import time
 
 import paho.mqtt.client as mqtt
 
-# Chunk 20 demo only: how far to shove a channel out of its normal band when injecting. Each is many
-# baseline-sigmas past the ~0.1–0.2 unit noise the generator produces, so both detectors trip clearly.
-ANOMALY_OFFSETS = {"temp": 8.0, "humidity": 25.0, "pressure": 6.0, "accel": 1.0}
+# Chunk 20 demo only: how far to shove a channel out of its normal band when injecting. Sized against
+# the FITTED band, not just the noise: temp/humidity carry a slow sine (amplitude 2 / 5) that widens
+# the z-score/MAD band to roughly ±7 / ±18, so the offset must clear band + sine-trough or the flag
+# oscillates with the sine *during* the fault (a marginal fault, not a decisive one) and the sustained
+# `avg_over_time > 0.5` alert never latches. These land every injected sample well outside the band.
+ANOMALY_OFFSETS = {"temp": 14.0, "humidity": 40.0, "pressure": 6.0, "accel": 1.0}
 
 
 def build_sample(t, channel, off):
