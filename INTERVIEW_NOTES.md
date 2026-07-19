@@ -493,4 +493,72 @@ MTTD vs MTTR, runbooks — that has to be reflexive._
 
   A runbook is essentially a book for the SREs to know what to do based on the alerts being shown and error logs occurring. It helps to decrease MTTR by specifying faults
 
-<!-- Phases 5-7 stubs added as you reach them. -->
+# Phase 5 — Fleet + self-heal
+
+_The single-device pipeline becomes a fleet, and the platform starts acting on its own. Interview weight
+sits on two things: the honest framing of why a mostly-simulated fleet is still a real demonstration
+(Chunk 26), and the control-loop idea behind self-healing (Chunk 28) — observe → diff → act — which is
+the same mental model as k8s liveness/readiness probes in Phase 7, so nailing it here pays off twice.
+Chunk 29's postmortem is a ready-made behavioral story; the value is being able to walk it calmly end to
+end, not the writeup itself._
+
+**Tier 1 — Interview-critical, full depth:**
+
+1. Why a mostly-**simulated fleet** is legitimate here — the workload, not the device count, is the point — Chunk 26.
+2. How a device's **status is derived** (freshness + SLO + anomaly) — Chunk 27.
+3. The **desired-state / control-loop** idea (observe → diff → act) and how it foreshadows k8s probes — Chunk 28.
+4. Walk a **blameless postmortem** end to end — Chunk 29.
+
+## Chunk 26 — Simulated fleet
+
+**Interview-critical tier:**
+
+- Why a **mostly-simulated fleet** is legitimate here — the workload (many independent streams with
+  faults), not the raw device count, is what the reliability stack is actually exercising. Say this
+  honestly in interviews.
+
+  The whole point of an SRE
+
+## Chunk 27 — Fleet overview dashboard
+
+**Interview-critical tier:**
+
+- How a device's **status is derived** — how freshness, SLO state, and anomaly flags combine into one
+  healthy / degraded / offline verdict per device.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- How **rollups** aggregate — turning N per-device series into fleet-level numbers (devices online,
+  ingest rate, active incidents).
+
+  _(your answer here)_
+
+## Chunk 28 — Self-healing remediation
+
+**Interview-critical tier:**
+
+- The **desired-state / control-loop** idea (observe → diff → act): what the loop observes, what it
+  compares against, what action it takes — and how this is the same model as k8s liveness/readiness
+  probes you build in Phase 7.
+
+  _(your answer here)_
+
+## Chunk 29 — Blameless postmortem
+
+**Interview-critical tier:**
+
+- Walk an interviewer through the **postmortem** end to end: timeline, impact, root cause, what worked,
+  action items.
+
+  _(your answer here)_
+
+**One-liner tier:**
+
+- What **blameless** means and why — focus on the system/process failure, not individual blame, so
+  people surface what actually happened.
+
+  _(your answer here)_
+
+<!-- Phases 6-7 stubs added as you reach them. -->

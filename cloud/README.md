@@ -24,9 +24,25 @@ docker compose up -d --build          # mosquitto + bridge + prometheus + grafan
 
 - Grafana: http://localhost:3000 (admin/admin) → dashboard **Fleet → Fleet — Per-Device**
 - Prometheus targets: http://localhost:9090/targets (the `fleet-bridge` job should be UP)
-- No Pi on this box? Feed synthetic data:
-  `pip install paho-mqtt && python tools/fake_telemetry.py --devices 3 --drop 0.02`
+- No Pi on this box? Run the simulated fleet: `docker compose --profile sim up -d` (see below).
 - Real Pi gateway: point it at this host — `FLEET_BROKER_HOST=<laptop-ip>` — and it publishes into the same broker.
+
+## Simulated fleet
+
+The [simulator/](simulator/) service publishes **N independent device streams** to MQTT — each with its
+own baseline (so no two look cloned) and its own small state machine that occasionally drifts into a
+channel anomaly or an offline outage. That gives the reliability stack a realistic, self-driving
+workload: the point is the *workload* (many streams, real faults), not the device count, so a modest 5
+devices exercises everything a hundred would.
+
+```bash
+docker compose --profile sim up -d          # starts 5 simulated devices (profile-gated)
+```
+
+Profile-gated so a default `up` never starts it — a real Pi and the simulator would otherwise both
+publish to the same broker. Knobs are env vars on the `simulator` service (device count, rate, anomaly/
+offline probabilities, warm-up). You can also run it standalone against a laptop broker:
+`python simulator/fleet_simulator.py --devices 5`.
 
 Layout: [`docker-compose.yml`](docker-compose.yml), [`mosquitto/`](mosquitto/),
 [`prometheus/`](prometheus/), [`grafana/provisioning`](grafana/provisioning) (datasource + dashboard
