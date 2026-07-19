@@ -66,9 +66,11 @@ Full rendered diagram: [docs/architecture.md](docs/architecture.md)
 
 ## Architecture
 
-> _Placeholder — filled in as the build progresses. The end-to-end diagram lives in
-> [docs/architecture.md](docs/architecture.md); this section will carry the narrative walkthrough of
-> each hop and its failure modes._
+The rendered end-to-end diagram and the **troubleshooting spine** — every hop from sensor to Grafana
+with its failure mode and detection signal — live in [docs/architecture.md](docs/architecture.md). The
+short version: bare-metal firmware frames sensor readings as newline-delimited JSON over UART; a
+containerized Raspberry Pi gateway parses, buffers, and republishes them over MQTT; and the cloud stack
+scrapes, dashboards, detects anomalies, alerts, and records incidents.
 
 ## SLIs / SLOs / Error budgets
 
@@ -88,8 +90,8 @@ guarantees for liveness — so a dropped sample in a 10 Hz stream is expected, n
 **Error budget.** Each SLO implies a budget of `1 − target`: 99% freshness ≈ 7.2 h/device/month of
 allowed staleness; 99.9% clean-parse ≈ 0.1% of frames. The budget is the room to absorb reconnects,
 deploys, and blips before a target is breached — when it runs out, reliability work takes priority over
-new features. Alert routing (Slack, severity, dedup) that consumes these thresholds lands in Chunk 22;
-until then, breaches surface on the Prometheus **/alerts** page.
+new features. These thresholds feed the alert rules, which route by severity through Alertmanager to
+Slack + the incident store.
 
 **Golden signals.** How these metrics map onto the four golden signals (latency / traffic / errors /
 saturation) — and which signal is only partially covered and why — is written up in
@@ -97,13 +99,15 @@ saturation) — and which signal is only partially covered and why — is writte
 
 ## Runbooks
 
-> _Placeholder — to be written in Chunk 25. Planned: "device offline → diagnose & recover",
-> "vibration anomaly → interpret & act". They'll live in [docs/](docs/)._
+One page per alert in [docs/runbooks/](docs/runbooks/), linked from each alert's `runbook_url` so
+whoever is paged lands on the fix. Covers device offline, channel anomaly (fault vs. regime change),
+fleet availability, ingest pipeline down, and ingest errors — each with diagnose-in-order steps, the
+known-good remediation, and when to escalate.
 
 ## Postmortems
 
-> _Placeholder — to be written in Chunk 29. One full blameless postmortem for a simulated incident
-> (timeline, impact, root cause, what worked, action items)._
+> _Upcoming: one full blameless postmortem for a simulated incident (timeline, impact, root cause, what
+> worked, action items), in [docs/](docs/)._
 
 ---
 

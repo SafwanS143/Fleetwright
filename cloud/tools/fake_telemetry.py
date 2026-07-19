@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Dev-only telemetry generator so the cloud stack has data on a laptop with no Pi attached.
 
-This is NOT part of the product path — the Pi gateway is the real publisher, and Chunk 26 replaces
-this with a proper multi-device fleet simulator. It exists purely to verify the Chunk 16/17 stack
-(Prometheus scraping, Grafana panels) end to end without hardware.
+Not part of the product path — the Pi gateway is the real publisher. This just feeds the cloud stack
+end to end without hardware.
 
     pip install paho-mqtt
     python fake_telemetry.py --devices 3 --rate 10          # 3 devices, 10 Hz each
     python fake_telemetry.py --drop 0.02                     # skip ~2% to exercise the packet-loss panel
-    python fake_telemetry.py --anomaly temp                  # trip the Chunk 20 detectors on one channel
+    python fake_telemetry.py --anomaly temp                  # trip the detectors on one channel
 """
 import argparse
 import json
@@ -18,11 +17,8 @@ import time
 
 import paho.mqtt.client as mqtt
 
-# Chunk 20 demo only: how far to shove a channel out of its normal band when injecting. Sized against
-# the FITTED band, not just the noise: temp/humidity carry a slow sine (amplitude 2 / 5) that widens
-# the z-score/MAD band to roughly ±7 / ±18, so the offset must clear band + sine-trough or the flag
-# oscillates with the sine *during* the fault (a marginal fault, not a decisive one) and the sustained
-# `avg_over_time > 0.5` alert never latches. These land every injected sample well outside the band.
+# How far to push a channel out of band when injecting. Sized to clear the fitted band including the
+# slow sine on temp/humidity, so every injected sample reads anomalous and the sustained alert latches.
 ANOMALY_OFFSETS = {"temp": 14.0, "humidity": 40.0, "pressure": 6.0, "accel": 1.0}
 
 
@@ -79,8 +75,8 @@ def main():
     ap.add_argument("--drop", type=float, default=0.0,
                     help="fraction of messages to skip publishing (fakes packet loss)")
     ap.add_argument("--anomaly", choices=list(ANOMALY_OFFSETS),
-                    help="Chunk 20 demo: after a warm-up delay, periodically push this channel out of "
-                         "its normal band on one device so both anomaly detectors trip")
+                    help="after a warm-up delay, periodically push this channel out of its normal band "
+                         "on one device so the anomaly detectors trip")
     ap.add_argument("--anomaly-device",
                     help="device id to disturb (default: the first device)")
     ap.add_argument("--anomaly-start", type=float, default=35.0,

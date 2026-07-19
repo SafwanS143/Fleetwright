@@ -1,60 +1,37 @@
-# Chunk 18 — SLIs as recording rules + SLOs as alert thresholds.
-#
-# Recording rules precompute each SLI into a first-class `fleet:...` series, so dashboards and (later)
-# burn-rate math read one cheap metric instead of re-deriving it. Alert rules encode the SLO targets;
-# Prometheus evaluates them and hands firing alerts to Alertmanager (Chunk 22), which routes them by
-# `severity` + `team` to Slack/the sink — see alertmanager/alertmanager.yml. The thresholds and the
-# routing labels live here so who-gets-paged is a config change, not a code change.
-#
-# Every alert carries: `severity` (routing urgency), `team` (owning route), `sli` (which objective), and
-# a `runbook_url` annotation (the fix — runbooks themselves land in Chunk 25). Alerts fire on SYMPTOMS
-# (SLO breach / sustained anomaly), never on raw values.
+# SLIs as recording rules + SLOs as alert thresholds. Recording rules precompute each SLI into a
+# `fleet:...` series; alert rules encode the targets and carry severity/team/sli/runbook_url labels so
+# routing is config, not code. Alerts fire on symptoms (SLO breach / sustained anomaly), never raw values.
 
 groups:
-  # ── SLIs as recording rules ─────────────────────────────────────────────────
   - name: fleet_sli_recording
     interval: 15s
     rules:
-      # Freshness (per device): seconds since the last message. Computed with time() at eval, so it
-      # climbs on its own for a dead device — the bridge keeps exporting that device's last-seen stamp.
+      # Seconds since last message. time() at eval means it climbs on its own for a dead device.
       - record: fleet:device_freshness_seconds
         expr: time() - fleet_last_message_timestamp_seconds
 
-      # A device is "up" when it's fresh inside the 10s window (1 = up, 0 = stale). Rules in a group
-      # evaluate in order, so this and the ratio below safely build on the record above.
+      # 1 = fresh within 10s, 0 = stale. Group rules evaluate in order, so later rules build on this.
       - record: fleet:device_up:bool
         expr: fleet:device_freshness_seconds < bool 10
 
-      # Fleet availability: fraction of known devices currently fresh (avg of 1/0 = the ratio).
+      # Fleet availability: fraction of devices currently fresh.
       - record: fleet:availability:ratio
         expr: avg(fleet:device_up:bool)
 
-      # Ingest error rate: malformed frames as a fraction of all frames that arrived (parsed + failed).
-      # Packet loss (seq gaps) is intentionally NOT in here: QoS 0 trades completeness for liveness, so
-      # dropped messages are tracked on the dashboard but are not an SLO objective.
-      #
-      # `or vector(0)` on the errors term is load-bearing: a labeled counter has no series until its
-      # first increment, so with zero decode errors ever, sum(rate(errors)) is EMPTY — and empty would
-      # otherwise poison both the numerator and the `+` in the denominator, giving "no data" instead of
-      # a healthy 0. The fallback makes zero-error traffic read as 0, while genuine silence (no messages)
-      # still yields no sample — you can't define an error rate with no denominator.
+      # Malformed frames as a fraction of all frames. Packet loss (seq gaps) is excluded — QoS 0 trades
+      # completeness for liveness. `or vector(0)` keeps zero-error traffic reading as 0 (a labeled
+      # counter has no series until its first increment, which would otherwise poison the ratio).
       - record: fleet:ingest_error:ratio_rate5m
         expr: |
           (sum(rate(fleet_message_errors_total[5m])) or vector(0))
           /
           (sum(rate(fleet_messages_total[5m])) + (sum(rate(fleet_message_errors_total[5m])) or vector(0)))
 
-  # ── SLOs as alert thresholds (fired at Alertmanager; routed by severity + team) ──
   - name: fleet_slo_alerts
     rules:
-      # Freshness SLO: each device fresh (< 10s) — page per device so attribution is automatic. A single
-      # device going quiet is the device team's problem, not a fleet-wide page → warning + device-reliability.
-      #
-      # keep_firing_for (Chunk 23): a device in a reconnect loop resolves the instant ONE message lands,
-      # then re-breaches 10s later — without hysteresis that's a resolve/re-fire pair every cycle. Holding
-      # the alert 1m past recovery fuses a flapping device into one continuous alert (and so one incident
-      # in Chunk 24). Cost: a genuinely recovered device shows "resolved" 1m late — cheap, since resolution
-      # isn't a paging event.
+      # Freshness SLO: each device fresh (< 10s), paged per device so attribution is automatic. One quiet
+      # device is the device team's problem, not a fleet page. keep_firing_for holds 1m past recovery so a
+      # reconnect-looping device is one continuous alert, not a resolve/re-fire pair every cycle.
       - alert: FleetDeviceStale
         expr: fleet:device_freshness_seconds > 10
         for: 30s
@@ -96,8 +73,7 @@ groups:
           description: "Malformed-frame ratio is {{ $value | humanizePercentage }} over 5m (SLO: < 0.1%)."
           runbook_url: "docs/runbooks/ingest-errors.md"
 
-      # Operational alert, not one of the three SLOs: if the bridge is unscrapeable, every SLI above is
-      # blind — a different, higher-severity failure than any single device going quiet.
+      # Operational alert, not an SLO: an unscrapeable bridge blinds every SLI above.
       - alert: FleetIngestPipelineDown
         expr: up{job="fleet-bridge"} == 0
         for: 1m
@@ -110,27 +86,12 @@ groups:
           description: "Prometheus cannot scrape the bridge; freshness / availability / error SLIs are all blind."
           runbook_url: "docs/runbooks/ingest-pipeline-down.md"
 
-  # ── Anomaly-based alert (Chunk 22): fires on the detector Chunk 21 put on the paging path ────────────
   - name: fleet_anomaly_alerts
     rules:
-      # Fires on the z-score/MAD detector only (detector="zscore") — the one the Chunk 21 evaluation chose
-      # for its 0.000 false-positive rate (see docs/detector-evaluation.md); Isolation Forest stays
-      # dashboard-only. This alerts on the detector's SYMPTOM flag, never on a raw channel value.
-      #
-      # The flag is a per-sample 1/0 at ~10 Hz. Requiring `avg_over_time(...[1m]) > 0.5` means the channel
-      # must read anomalous for the MAJORITY of a 1-minute window before this even goes pending — the
-      # sustained-breach / dwell mitigation from the evaluation, so a single-sample blip or a brief
-      # legitimate wobble never pages. `for: 30s` adds a second hold on top.
-      #
-      # Chunk 23 — flap-damping is asymmetric by design: slow to fire (the dwell above), slow to clear
-      # (`keep_firing_for: 2m`). An intermittent fault — loose wire, marginal sensor — oscillates in/out
-      # of the anomalous band; without hysteresis every dip below threshold emits resolved + a fresh
-      # firing. Holding 2m bridges gaps shorter than that, so a fault flapping on/off every ~15s is ONE
-      # continuous alert (and one Chunk 24 incident with one open + one close, not a stack of two-minute
-      # incidents). Why 2m: comfortably longer than the flap cycles we see (seconds to ~1m), and an
-      # intermittent fault that stays quiet for a full 2m is fairly called a separate episode. The cost
-      # is symmetric: a real recovery reads "resolved" 2m late — fine, recovery isn't the page we
-      # optimize for detection time.
+      # Fires on the chosen z-score/MAD detector only (0.000 FP rate; see docs/detector-evaluation.md);
+      # Isolation Forest stays dashboard-only. avg_over_time[1m] > 0.5 requires the channel to read
+      # anomalous for the majority of a minute (dwell), so a blip or brief wobble never pages.
+      # keep_firing_for 2m clears slowly too, fusing an intermittent fault into one continuous alert.
       - alert: FleetChannelAnomaly
         expr: avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5
         for: 30s

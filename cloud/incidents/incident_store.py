@@ -1,48 +1,9 @@
 #!/usr/bin/env python3
-"""SQLite incident store + timeline (Chunk 24).
+"""SQLite incident store: turns the Alertmanager alert stream into incident rows with a lifecycle.
 
-The alerting path so far is stateless: Alertmanager routes notifications, but nothing REMEMBERS —
-"how many incidents did sim-01 have this week, how long did each last, did that anomaly flap?" has no
-answer once the Slack scrollback ages out. This service is the memory: it consumes the same Alertmanager
-webhook the log sink does (every receiver fans out here with `send_resolved: true`), and turns the
-alert stream into incident ROWS with a lifecycle:
-
-    firing   → open an incident (or reopen a just-resolved one — see reopen window below)
-    resolved → close it, record the duration
-
-Incidents come in three scopes, derived from the labels Alertmanager forwards — the store must handle
-all of them, they are different kinds of event:
-    channel — per-channel anomaly (device + channel labels): one sensor stream misbehaving
-    device  — per-device staleness (device label only): one box went quiet
-    fleet   — availability / error-rate / pipeline (no device label): systemic, one row for the event,
-              NOT one per device (inhibition in Chunk 23 mutes the per-device noise; here the fleet
-              incident is the single record of it)
-
-Identity & dedup: Alertmanager's `fingerprint` (a stable hash of the alert's label set) is the natural
-key. A repeat notification for a still-open incident (group_interval/repeat_interval re-sends) is a
-no-op — store-level dedup mirroring Alertmanager's notification-level dedup. A re-fire arriving within
-FLEET_REOPEN_WINDOW of the resolve REOPENS the same row instead of minting a new one: a fault that
-flaps past the rule-level hysteresis (`keep_firing_for`, Chunk 23) still records as ONE operational
-episode with a `reopened` event in its timeline, not a stack of two-minute incidents. The window
-defaults to 300s to match Alertmanager's group_interval — the two layers agree on what "the same
-episode" means.
-
-One failure mode needs explicit handling: an alert whose RESOLVED notification never arrives — seen
-live in testing when a per-device Stale alert resolved while the fleet-availability critical was still
-inhibiting it (inhibition mutes resolves too), and equally possible across an Alertmanager restart.
-Without a backstop that incident is open forever. So a janitor sweep expires open incidents not heard
-from in FLEET_INCIDENT_EXPIRY (default 5h — deliberately past Alertmanager's 4h repeat_interval, since
-any still-firing, un-muted alert re-notifies at least that often; an open incident silent for longer
-is either resolved-unheard or muted because a covering incident owns the page).
-
-Storage is SQLite on a named volume: incidents are the system's history, so they must survive
-`compose down` — and on restart the open ones are rehydrated into the gauge below. Grafana gets the
-timeline via Prometheus, not by reading the DB: the store exports `fleet_incident_active` (1 while
-open, 0 after) which a state-timeline panel renders directly, plus open-count/opened/reopened/TTR
-series. That keeps Grafana plugin-free and reuses the scrape path everything else already uses; the
-full rows + per-incident event timeline are served as JSON at /incidents for inspection.
-
-Stdlib + prometheus_client only.
+Consumes the same Alertmanager webhook as the log sink (firing opens an incident, resolved closes it
+and records the duration) and exports fleet_incident_* metrics that Prometheus scrapes and Grafana
+renders as a timeline. Stdlib + prometheus_client only.
 """
 
 import json
@@ -64,18 +25,15 @@ from prometheus_client import (
 
 PORT = int(os.environ.get("FLEET_INCIDENT_PORT", "9096"))
 DB_PATH = os.environ.get("FLEET_INCIDENT_DB", "/data/incidents.db")
-# A re-fire of the same fingerprint within this many seconds of its resolve reopens the incident
-# instead of opening a new one. Matches Alertmanager's group_interval (5m) so the store and the
-# notifier draw the "same episode vs. new episode" line in the same place.
+# A re-fire within this long of a resolve reopens the same incident. Matches Alertmanager's
+# group_interval so store and notifier agree on "same episode vs. new episode".
 REOPEN_WINDOW = float(os.environ.get("FLEET_REOPEN_WINDOW", "300"))
-# Janitor: open incidents not heard from (no firing notification) in this long are force-closed as
-# 'expired' — the swallowed-resolve backstop. Must exceed repeat_interval (4h), or still-firing
-# incidents would expire between re-notifications.
+# Force-close open incidents silent this long (swallowed-resolve backstop). Must exceed repeat_interval
+# so a still-firing alert always re-notifies first.
 EXPIRY = float(os.environ.get("FLEET_INCIDENT_EXPIRY", "18000"))
 
 # ── metrics ──────────────────────────────────────────────────────────────────
-# The timeline primitive: 1 while an incident on this (alert, device, channel) is open. Grafana's
-# state-timeline panel draws this directly — red span = open incident, at full scrape resolution.
+# 1 while an incident is open — the state-timeline panel draws this directly.
 INCIDENT_ACTIVE = Gauge(
     "fleet_incident_active",
     "1 while an incident is open for this alert/device/channel, 0 once resolved.",
@@ -96,8 +54,7 @@ REOPENED = Counter(
     "Incidents reopened by a re-fire inside the reopen window (flap indicator).",
     ["severity", "scope"],
 )
-# Time-to-recovery per resolved incident. sum/count of this histogram IS the MTTR panel; buckets sized
-# for incident scales (minutes→hours), not request latency.
+# sum/count of this histogram is the MTTR panel; buckets sized for minutes→hours, not request latency.
 TTR = Histogram(
     "fleet_incident_ttr_seconds",
     "Open→resolved duration of each incident (time to recovery).",
@@ -111,14 +68,14 @@ CREATE TABLE IF NOT EXISTS incidents (
   fingerprint  TEXT NOT NULL,           -- Alertmanager's stable hash of the label set (identity)
   alertname    TEXT NOT NULL,
   scope        TEXT NOT NULL,           -- fleet | device | channel
-  device       TEXT,                    -- NULL for fleet-scoped incidents
-  channel      TEXT,                    -- NULL unless channel-scoped (anomaly)
+  device       TEXT,
+  channel      TEXT,
   severity     TEXT,
   team         TEXT,
   sli          TEXT,
   summary      TEXT,
   status       TEXT NOT NULL DEFAULT 'open',   -- open | resolved
-  opened_at    REAL NOT NULL,           -- unix seconds; survives reopens (episode start, not last flap)
+  opened_at    REAL NOT NULL,           -- episode start; survives reopens
   resolved_at  REAL,
   last_seen_at REAL,                    -- last firing notification; drives the expiry sweep
   reopen_count INTEGER NOT NULL DEFAULT 0
@@ -129,28 +86,26 @@ CREATE TABLE IF NOT EXISTS incident_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   incident_id INTEGER NOT NULL REFERENCES incidents(id),
   ts          REAL NOT NULL,
-  kind        TEXT NOT NULL,            -- opened | reopened | resolved
+  kind        TEXT NOT NULL,            -- opened | reopened | resolved | expired
   note        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_incident ON incident_events (incident_id, ts);
 """
 
-# ThreadingHTTPServer handles each POST on its own thread; one connection + one lock serializes all
-# DB work. Incident traffic is a few rows a minute — a lock, not a pool, is the right size.
+# One connection + one lock serializes all DB work; incident traffic is a few rows a minute.
 LOCK = threading.Lock()
 db = sqlite3.connect(DB_PATH, check_same_thread=False)
 db.row_factory = sqlite3.Row
 db.executescript(SCHEMA)
-db.execute("PRAGMA journal_mode=WAL")  # webhook writes + /incidents reads without blocking each other
+db.execute("PRAGMA journal_mode=WAL")
 db.commit()
 
 _seen_severities = {"warning", "critical"}
 
 
 def parse_ts(value):
-    """RFC3339 from Alertmanager → unix seconds. Go's zero time ("0001-01-01...") means 'not set'
-    (endsAt while still firing) → None. Go can emit nanosecond fractions; trim to microseconds for
-    fromisoformat."""
+    """RFC3339 → unix seconds. Go's zero time (year < 2000) means 'not set' → None; trim
+    sub-microsecond fractions that fromisoformat rejects."""
     if not value:
         return None
     try:
@@ -201,8 +156,7 @@ def handle_alert(alert):
     device = labels.get("device")
     channel = labels.get("channel")
     severity = labels.get("severity", "none")
-    # Scope from label shape: channel ⊂ device ⊂ fleet. Fleet-scoped alerts carry no device label,
-    # so a systemic event is ONE incident row, never N per-device rows.
+    # Scope from label shape: a fleet-wide alert carries no device label, so it's one row not N.
     scope = "channel" if channel else ("device" if device else "fleet")
     attribution = f"{device or 'fleet'}{'/' + channel if channel else ''}"
     summary = annotations.get("summary", "")
@@ -215,11 +169,10 @@ def handle_alert(alert):
 
     if status == "firing":
         if open_row:
-            # Already tracked: group_interval/repeat_interval re-notifications are not new state —
-            # but they are proof of life, which is what keeps the expiry sweep off this incident.
+            # Re-notification of a tracked incident: not new state, but proof of life for the sweep.
             db.execute("UPDATE incidents SET last_seen_at=? WHERE id=?", (now, open_row["id"]))
             return
-        # startsAt is when the alert began firing — truer than webhook arrival, which group_wait delays.
+        # startsAt is truer than webhook arrival, which group_wait delays.
         started = parse_ts(alert.get("startsAt")) or now
 
         recent = db.execute(
@@ -257,16 +210,14 @@ def handle_alert(alert):
 
     elif status == "resolved":
         if not open_row:
-            # Resolve for something we never opened (store deployed mid-incident, or a replayed
-            # notification for an already-closed row) — nothing to do.
+            # Resolve for something we never opened (deployed mid-incident, or a replay) — ignore.
             return
         ended = parse_ts(alert.get("endsAt")) or now
         db.execute(
             "UPDATE incidents SET status='resolved', resolved_at=? WHERE id=?",
             (ended, open_row["id"]),
         )
-        # Duration spans the whole episode including reopens/quiet gaps — deliberately: the fault was
-        # not fixed during the flap's quiet phases, so they count against recovery time.
+        # Duration spans the whole episode, flap quiet-gaps included — the fault wasn't fixed then.
         duration = max(ended - open_row["opened_at"], 0.0)
         add_event(open_row["id"], ended, "resolved", f"after {int(duration)}s")
         TTR.observe(duration)
@@ -279,12 +230,9 @@ def handle_alert(alert):
 
 
 def expire_stale_incidents():
-    """The swallowed-resolve backstop: force-close open incidents with no firing notification in
-    EXPIRY seconds. Any live, un-muted alert re-notifies at least every repeat_interval (4h < EXPIRY),
-    so silence this long means the resolve never reached us (inhibited at resolve time, Alertmanager
-    restart) — or the alert is muted by a covering incident, which then owns the record. Expired
-    closures do NOT feed the TTR histogram: the real recovery time is unknown, and inventing one
-    would corrupt MTTR."""
+    """Force-close open incidents silent longer than EXPIRY: their resolve was lost (inhibited at
+    resolve time, or an Alertmanager restart). Expired closures don't feed TTR — recovery time is
+    unknown, and inventing one would corrupt MTTR."""
     now = time.time()
     with LOCK:
         rows = db.execute(
@@ -321,9 +269,8 @@ def janitor_loop():
 
 
 def rehydrate():
-    """On restart, open incidents in the DB are still open in the world — put them back in the gauge
-    so the timeline doesn't show a phantom recovery, and prime the open-count series so they exist
-    (a labeled gauge has no series until first set, and 'no data' is not 0)."""
+    """On restart, open incidents are still open in the world — reprime the gauges so the timeline
+    doesn't show a phantom recovery ('no data' is not 0)."""
     with LOCK:
         rows = db.execute("SELECT * FROM incidents WHERE status='open'").fetchall()
         for row in rows:
@@ -357,7 +304,6 @@ def recent_incidents(limit=100):
     return incidents
 
 
-# ── HTTP surface ─────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def _reply(self, code, body, content_type="text/plain; charset=utf-8"):
         self.send_response(code)
@@ -375,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._reply(400, "bad json")
             return
-        # Alertmanager batches a whole group per POST; each member alert advances its own incident.
+        # Alertmanager batches a whole group per POST; each member advances its own incident.
         with LOCK:
             for alert in payload.get("alerts", []):
                 handle_alert(alert)
@@ -394,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(200, "incident-store ok")
 
     def log_message(self, *args):
-        pass  # lifecycle lines above are the only output we want
+        pass  # suppress the default access log; our lifecycle lines are the only output
 
 
 if __name__ == "__main__":

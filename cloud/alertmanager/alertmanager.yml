@@ -1,59 +1,37 @@
-# Chunk 22 — Alertmanager: severity + routing.
-# Chunk 23 — dedup + suppression: the group_*/repeat_interval windows below plus the inhibit_rules at
-#            the bottom. Flap-damping at the *rule* level (dwell on the way in, keep_firing_for on the
-#            way out) lives in prometheus/rules/fleet_slos.yml — see the comments there.
-#
-# Prometheus decides *when* an alert fires (the rules in prometheus/rules/); Alertmanager decides *who*
-# hears about it and *how loud*. Splitting those two jobs is exactly why Alertmanager beats hand-rolled
-# webhook code: grouping, dedup, silences, inhibition and per-route routing are config here, not code we
-# maintain — and the same tree serves Slack, PagerDuty, or anything else by adding a receiver.
+# Prometheus decides WHEN an alert fires; Alertmanager decides who hears it and how loud. Grouping,
+# dedup, suppression windows, and inhibition are all config here — the same tree serves Slack or a
+# webhook by adding a receiver.
 
 global:
   resolve_timeout: 5m
-  # The Slack webhook is a secret, so it lives in a mounted file (gitignored), not in this config.
-  # Alertmanager reads it at *notify* time, so if the file is absent the stack still starts, Slack sends
-  # are simply skipped, and the always-on local `alert-sink` receiver still shows every alert — i.e. the
-  # whole path is demonstrable with zero external setup. Drop a webhook in the file to light up Slack.
+  # Read at notify time from a gitignored file: if absent, the stack still runs and Slack is skipped
+  # while the local sink keeps showing every alert.
   slack_api_url_file: /etc/alertmanager/secrets/slack_api_url
 
 templates:
   - /etc/alertmanager/templates/*.tmpl
 
-# ── Routing tree ──────────────────────────────────────────────────────────────
-# Matched top-down; the first matching leaf wins (no `continue` here, so each alert lands in exactly one
-# receiver).
-#
-# Chunk 23 — the three windows below ARE the dedup + suppression design, so each length has a reason:
-#   * Dedup is identity-based and free: alerts with the same label set are one alert, and `group_by`
-#     collapses everything sharing (alertname, device) into ONE notification — 4 anomalous channels on
-#     one device is one message, not four. Channel detail stays in the message body, so nothing is lost.
-#   * group_wait 30s — how long a NEW group holds before its first notification, so related alerts that
-#     trip within seconds of each other ride along in one message. Longer would eat into detection time
-#     (MTTD) on first notice; shorter defeats the batching. 30s ≈ one rule-evaluation `for:` period.
-#   * group_interval 5m — the SUPPRESSION WINDOW: once a group has notified, any further change in it
-#     (new alert joins, member resolves, flap re-fires) waits at least 5m to speak again. This is the
-#     backstop that turns a worst-case flapping alert into ≤1 message per 5m instead of 100s. Why 5m:
-#     our fault windows (broker restart, sensor reseat, injected faults) live on the ~1–15m scale — a
-#     tighter window (1m) would re-ping mid-incident with no new information a human could act on, and
-#     a looser one (30m+) would hide a genuinely *changed* situation (a second device joining a group).
-#   * repeat_interval 4h — a still-firing, unchanged group re-pings at most every 4h: long enough that
-#     an acknowledged, being-worked incident doesn't nag, short enough that an alert can't stay silently
-#     red for a whole day because its one notification got missed. (PagerDuty-style ack/escalate would
-#     replace this; with Slack, a periodic re-ping is the honest fallback.)
+# Routing tree: matched top-down, first matching leaf wins. The group_* / repeat_interval windows are
+# the dedup + suppression design — each length is justified below.
+#   group_by collapses everything sharing (alertname, device) into one notification (dedup).
+#   group_wait 30s   — hold a new group briefly so alerts tripping together share one message.
+#   group_interval 5m — floor between re-notifies of a changed group; caps a worst-case flap at ≤1/5m.
+#                       Sized to our ~1–15m fault windows: 1m nags mid-incident, 30m+ hides real change.
+#   repeat_interval 4h — a still-firing group re-pings at most this often (anti-fatigue).
 route:
-  receiver: fleet-default              # catch-all: anything that matches no leaf still goes somewhere
-  group_by: ["alertname", "device"]    # one notification per (alert, device) — attribution stays intact
+  receiver: fleet-default              # catch-all for anything matching no leaf
+  group_by: ["alertname", "device"]    # one notification per (alert, device)
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
   routes:
-    # Severity first: a critical is a wake-someone-up event no matter which team owns it.
+    # A critical is a wake-someone-up event regardless of owner — page it fast.
     - matchers:
         - severity = "critical"
       receiver: fleet-critical
-      group_wait: 10s                  # page criticals faster than the 30s default
+      group_wait: 10s
 
-    # Warnings route to the *owning team's* channel, not the pager.
+    # Warnings route to the owning team's channel, not the pager.
     - matchers:
         - severity = "warning"
         - team = "device-reliability"
@@ -63,11 +41,8 @@ route:
         - severity = "warning"
       receiver: fleet-warning
 
-# ── Receivers ─────────────────────────────────────────────────────────────────
-# Every receiver fans out to the local sink (alerts always visible in `docker compose logs`), the
-# incident store (Chunk 24: `firing` opens an incident, `resolved` closes it — send_resolved is
-# load-bearing there), and a Slack channel (live once the webhook secret is in place). Same structured
-# message everywhere; only the destination channel changes per severity/owner.
+# Every receiver fans out to the local sink, the incident store (send_resolved is load-bearing: it
+# closes incidents), and a Slack channel. Only the destination channel changes per severity/owner.
 receivers:
   - name: fleet-default
     webhook_configs:
@@ -121,20 +96,15 @@ receivers:
         text: '{{ template "fleet.slack.text" . }}'
         color: '{{ template "fleet.slack.color" . }}'
 
-# ── Inhibition (Chunk 23) ─────────────────────────────────────────────────────
-# Suppression along the CAUSALITY chain: while a source alert fires, matching target alerts are muted
-# (they still exist in Prometheus/the UI — they just don't notify). This is what kills the alert storm
-# where one upstream failure makes every downstream symptom page at once. No `equal:` on either rule
-# because the sources are fleet-scoped (no `device` label) and the suppression is intentionally global.
+# Inhibition mutes symptoms along the causality chain: while a source fires, matching targets don't
+# notify (they still exist in the UI). Kills the storm where one upstream failure pages every symptom.
 inhibit_rules:
-  # Bridge down ⇒ Prometheus is blind to every device: freshness climbs for ALL devices, availability
-  # craters, anomaly series go stale — none of which is actionable per-device. Page the one cause
-  # (pipeline, critical), mute the N symptoms it fully explains.
+  # Bridge down blinds Prometheus to every device, so its freshness/availability/anomaly symptoms
+  # aren't per-device-actionable — page the one cause, mute what it explains.
   - source_matchers: [alertname = "FleetIngestPipelineDown"]
     target_matchers: [sli =~ "freshness|availability|anomaly"]
 
-  # Fleet availability breached ⇒ >5% of devices are already stale. The per-device Stale warnings are
-  # then redundant detail on the same event — one critical page covers it; per-device attribution is
-  # still on the dashboard and in the incident store, just not in your pocket 20×.
+  # Fleet availability breach already means >5% of devices are stale — the per-device warnings are
+  # redundant detail; attribution stays on the dashboard and in the incident store.
   - source_matchers: [alertname = "FleetAvailabilityBelowSLO"]
     target_matchers: [alertname = "FleetDeviceStale"]

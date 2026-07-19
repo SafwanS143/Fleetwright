@@ -90,15 +90,15 @@ firing alerts to Alertmanager, which groups them and walks a routing tree:
 
 Every alert rule carries `severity`, `team` (owner), `sli`, and a `runbook_url` — routing and attribution
 are labels on the alert, not values baked into notification code. Alerts fire on **symptoms** (SLO breach
-or a *sustained* anomaly from the Chunk 21 detector, `avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5`),
+or a *sustained* anomaly from the chosen z-score detector, `avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5`),
 never on raw sensor values.
 
 **Why Alertmanager instead of hand-rolled webhook code:** grouping, dedup, silences, inhibition, and
 per-route fan-out are all config, not code we maintain — and the same tree serves Slack, PagerDuty, or a
-custom webhook by adding a receiver. It's the natural home for Chunk 23's dedup/suppression tuning too.
+custom webhook by adding a receiver. It's also the natural home for the dedup/suppression tuning below.
 
 **Every receiver notifies three places:** a Slack channel, the local `alert-sink` container, and the
-Chunk 24 incident store. Slack needs a webhook this project doesn't have yet, so the sink (stdlib,
+incident store. Slack needs a webhook this project doesn't have yet, so the sink (stdlib,
 [alertmanager/sink/](alertmanager/sink/)) makes the whole path demonstrable with **zero external setup**
 — it prints each routed alert with severity + attribution to `docker compose logs alert-sink`. To turn
 Slack on, drop your webhook URL into `alertmanager/secrets/slack_api_url` — see
@@ -112,7 +112,7 @@ Slack on, drop your webhook URL into `alertmanager/secrets/slack_api_url` — se
   docker compose logs -f alert-sink              # FleetDeviceStale (+availability) route in ~1 min
   ```
 
-## Dedup + suppression (Chunk 23)
+## Dedup + suppression
 
 One fault must produce **one** notification, not a storm. Four layers, each catching a different kind
 of noise — all config, no code:
@@ -136,7 +136,7 @@ of noise — all config, no code:
 Try it: run `fake_telemetry.py --anomaly temp` (toggles the fault every 15s) — the sink shows a single
 `FleetChannelAnomaly` firing + one resolve after the run, not a message per toggle.
 
-## Incident store + timeline (Chunk 24)
+## Incident store + timeline
 
 Alerting is stateless — nothing remembers what happened. The [incidents/](incidents/) service is the
 memory: it consumes the **same Alertmanager webhook** as the sink (`firing` opens an incident,

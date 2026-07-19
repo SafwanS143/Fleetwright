@@ -8,9 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY incident_store.py .
 
-# Runs unprivileged like the other services. /data is created HERE (owned by fleet) so that when the
-# named volume first mounts over it, docker seeds the volume with this ownership — otherwise the
-# volume comes up root-owned and the unprivileged process can't create the SQLite file.
+# Create /data owned by fleet so the mounted volume inherits that ownership; otherwise it comes up
+# root-owned and the unprivileged process can't write the SQLite file.
 RUN useradd --uid 1000 --create-home fleet && mkdir -p /data && chown fleet /data
 USER fleet
 

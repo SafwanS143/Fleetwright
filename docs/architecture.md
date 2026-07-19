@@ -1,6 +1,7 @@
 # Fleetwright — Architecture
 
-This is the v0 architecture. It will be refined as the build progresses (final pass in Chunk 25).
+How telemetry flows from a bare-metal sensor node to a cloud observability stack, and — the point of
+the project — the failure mode and detection signal at **every hop** along the way.
 
 ## The gateway pattern
 
@@ -31,42 +32,71 @@ flowchart LR
     subgraph CLOUD["Cloud — observability & reliability"]
         BROKER["Mosquitto broker\nQoS / retained / LWT"]
         BRIDGE["MQTT→Prometheus bridge\ncounters / gauges / histograms"]
-        PROM["Prometheus\n(scrape /metrics)"]
-        GRAF["Grafana dashboards"]
-        IF["Isolation Forest\nper-channel anomaly detection"]
-        ALERT["Severity-routed Slack alerts\ndedup + suppression"]
+        ANOM["Anomaly detection\nz-score/MAD + Isolation Forest\nper channel"]
+        PROM["Prometheus\nscrape + SLO rules"]
+        AM["Alertmanager\nseverity routing\ndedup + suppression"]
         INC["SQLite incident store\n+ timeline"]
-        HEAL["Self-healing\nremediation loop"]
+        GRAF["Grafana dashboards"]
         BROKER --> BRIDGE --> PROM --> GRAF
-        BRIDGE --> IF --> ALERT --> INC
-        INC --> HEAL
+        BROKER --> ANOM --> PROM
+        PROM --> AM --> INC --> PROM
+        AM --> SINK["Slack + local sink"]
     end
 
     FW -->|UART: newline-delimited JSON| SER
     PUB -->|MQTT publish: fleet/&lt;id&gt;/telemetry| BROKER
 
-    %% OTA / control downlink — closes the loop cloud → device
-    HEAL -.->|OTA cmd: fleet/&lt;id&gt;/cmd| BROKER
+    %% OTA / control downlink — closes the loop cloud → device (planned)
+    AM -.->|remediation / OTA cmd: fleet/&lt;id&gt;/cmd| BROKER
     BROKER -.->|downlink| PUB
     PUB -.->|UART relay| FW
 ```
 
-## Hops & their failure modes (the troubleshooting spine)
+Solid arrows are the live telemetry + alerting path. Dotted arrows are the planned cloud→device control
+loop (self-healing and OTA).
 
-The whole interview value of this project is being able to name the failure mode and the detection
-signal at **every** hop. This list will be fleshed out (Chunk 35), but the chain is:
+## The troubleshooting spine — every hop, its failure mode, its detection signal
 
-1. **Sensor → firmware (I²C)** — bus NAK, wrong address, sensor unpowered.
-2. **Firmware → gateway (UART)** — baud mismatch, partial lines, unplugged cable.
-3. **Gateway parse** — malformed JSON, sequence gaps (packet loss).
-4. **Ring buffer** — broker unreachable; buffer fills (bounded → backpressure).
-5. **MQTT publish → broker** — connection drop, QoS behavior, LWT marks device offline.
-6. **Broker → bridge** — subscriber lag, topic mismatch.
-7. **Bridge → Prometheus** — scrape failure, stale metrics.
-8. **Prometheus → Grafana** — query/datasource issues, freshness gaps.
+This is the whole interview value of the project: given "telemetry stopped," name where it broke and how
+you'd know, hop by hop.
 
-## Topic design (v0)
+| # | Hop | How it fails | How you detect it |
+| - | --- | ------------ | ----------------- |
+| 1 | Sensor → firmware (I²C) | bus NAK, wrong address, unpowered sensor, wedged bus after a warm reset | `WHO_AM_I`/chip-ID check at boot; I²C bus-recovery; values stuck/implausible |
+| 2 | Firmware → gateway (UART) | baud mismatch, half-lines, unplugged cable | garbled/partial JSON at the gateway; `/dev/ttyACM*` disappears; `dmesg` |
+| 3 | Gateway parse | malformed JSON, dropped messages | decode-error counter (`FleetHighErrorRate`); `seq` gaps → packet-loss metric |
+| 4 | Ring buffer | broker unreachable; buffer fills | buffer depth; bounded → drops oldest (backpressure), no OOM |
+| 5 | MQTT publish → broker | connection drop, ungraceful gateway death | LWT flips device status; retained status goes stale |
+| 6 | Broker → bridge | subscriber lag, topic/QoS mismatch | freshness climbs; `mosquitto_sub` shows whether messages still arrive |
+| 7 | Bridge → Prometheus | exporter crash, scrape failure | `up{job="fleet-bridge"}==0` → `FleetIngestPipelineDown` (blinds every SLI) |
+| 8 | Prometheus → alerting | SLO breach, sustained anomaly | recording rules + SLO alerts; per-channel anomaly flag |
+| 9 | Alerting → human/incident | alert storm, flapping, lost pages | dedup + suppression + inhibition; incident store timeline + MTTR |
+
+Freshness is the backbone signal: `time() − last-seen` climbs on its own for a dead device, so a fault
+anywhere in hops 1–6 that stops telemetry surfaces as staleness — and the table above is how you localize
+*which* hop.
+
+## SLIs / SLOs
+
+Three service-level indicators, each a `fleet:...` recording rule with an SLO threshold in
+[`cloud/prometheus/rules/fleet_slos.yml`](../cloud/prometheus/rules/fleet_slos.yml):
+
+- **Telemetry freshness** (per device) — fresh (< 10s) ≥ 99% of the time.
+- **Fleet availability** — ≥ 95% of devices fresh at once.
+- **Ingest error rate** — < 0.1% malformed frames over 5m.
+
+Completeness (packet loss) is deliberately **not** an SLO: telemetry publishes at QoS 0, trading delivery
+guarantees for liveness, so a dropped sample in a 10 Hz stream is expected, not budget-consuming.
+
+## Alerting & incidents
+
+Prometheus decides *when* an alert fires; Alertmanager decides *who* hears it and *how loud* (severity
+routing), and collapses noise with dedup, suppression windows, and inhibition. Every alert carries a
+`runbook_url` → [runbooks/](runbooks/). The [incident store](../cloud/incidents/) turns the alert stream
+into a durable timeline (open on trip, close on recovery) and exports MTTR.
+
+## Topic design
 
 - `fleet/<id>/telemetry` — sensor stream (uplink)
 - `fleet/<id>/status` — retained liveness + LWT (uplink)
-- `fleet/<id>/cmd` — OTA / control commands (downlink)
+- `fleet/<id>/cmd` — control / OTA commands (downlink, planned)

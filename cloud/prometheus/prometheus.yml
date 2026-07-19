@@ -4,13 +4,11 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s # how often SLI recording rules + SLO alerts are re-evaluated
 
-# SLI recording rules and SLO alert thresholds (Chunk 18). Glob so new rule files are picked up
-# on reload without touching this config.
+# SLI recording rules and SLO alert thresholds; glob so new files load on reload.
 rule_files:
   - /etc/prometheus/rules/*.yml
 
-# Where firing alerts are SENT (Chunk 22). Prometheus only evaluates rules and pushes state changes to
-# Alertmanager; all routing/grouping/silencing lives in alertmanager/alertmanager.yml.
+# Where firing alerts are sent; all routing/grouping lives in alertmanager/alertmanager.yml.
 alerting:
   alertmanagers:
     - static_configs:
@@ -26,8 +24,7 @@ scrape_configs:
         labels:
           service: mqtt-prometheus-bridge
 
-  # Anomaly detector (Chunk 20): a second subscriber exposing per-channel anomaly scores. Same 5s
-  # cadence as the bridge so scores line up with the telemetry they're derived from.
+  # Anomaly detector: per-channel scores, same 5s cadence so they line up with the telemetry.
   - job_name: fleet-anomaly
     scrape_interval: 5s
     static_configs:
@@ -35,9 +32,7 @@ scrape_configs:
         labels:
           service: anomaly-detector
 
-  # Incident store (Chunk 24): fleet_incident_active drives the Grafana state timeline; open counts,
-  # opened/reopened totals and the TTR histogram ride along. Incidents move at human speed, so the
-  # 15s global interval is plenty — no override.
+  # Incident store: fleet_incident_* metrics. Human-speed, so the 15s global interval is plenty.
   - job_name: fleet-incidents
     static_configs:
       - targets: ["incidents:9096"]   # docker-network DNS name of the incident store

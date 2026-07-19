@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
-"""Local Alertmanager webhook receiver (Chunk 22).
+"""Local Alertmanager webhook receiver: prints each routed alert with severity + attribution.
 
-Alertmanager fans every routed alert out to its receivers. Slack is the real destination, but it needs a
-webhook URL this project doesn't have yet — so this tiny always-on sink is wired into *every* receiver as
-well. It gives a zero-setup way to SEE alerts fire with their severity + attribution (device/channel/owner)
-in `docker compose logs`, which is what makes the Chunk 22 "a real alert fires" checkpoint demonstrable
-without any external service.
-
-It's also the seam for Chunk 24: the incident store will consume this same Alertmanager webhook (status
-`firing` opens an incident row, `resolved` closes it), so the payload is parsed here the way that service
-will need it. Stdlib only — no Flask, no requirements.
+Wired into every receiver as an always-on, zero-setup way to see alerts fire in `docker compose logs`
+without a Slack webhook. Stdlib only.
 """
 
 import json
@@ -32,7 +25,7 @@ class Handler(BaseHTTPRequestHandler):
 
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
         receiver = payload.get("receiver", "?")
-        # Alertmanager batches a whole group into one POST; iterate the members so each shows its own line.
+        # Alertmanager batches a whole group into one POST; print each member on its own line.
         for alert in payload.get("alerts", []):
             labels = alert.get("labels", {})
             annotations = alert.get("annotations", {})

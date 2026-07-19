@@ -12,7 +12,7 @@
       "id": 1,
       "type": "state-timeline",
       "title": "Incident timeline — open (red) per alert × device × channel",
-      "description": "fleet_incident_active from the Chunk 24 store: a row exists once an incident has opened for that (alert, device, channel); it holds 1 (OPEN) until the resolved notification closes it. Fleet-scoped incidents (availability, error rate, pipeline) show a blank device — they are one row for the systemic event, not one per device. A flap fused by keep_firing_for / the reopen window shows as ONE continuous red span.",
+      "description": "fleet_incident_active: a row holds 1 (OPEN) from the first firing notification until it resolves. Fleet-scoped incidents (availability, error rate, pipeline) show a blank device — one row for the systemic event, not one per device. A flap fused by hysteresis / the reopen window is one continuous span.",
       "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
       "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
       "targets": [

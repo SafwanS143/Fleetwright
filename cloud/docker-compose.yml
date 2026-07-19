@@ -31,7 +31,7 @@ services:
       FLEET_BROKER_HOST: mosquitto   # same broker; it's a second subscriber, not in the bridge's path
       FLEET_BROKER_PORT: "1883"
       FLEET_METRICS_PORT: "8001"
-      # Warm-up + detector knobs. Chunk 21 tunes these. ~300 samples ≈ 30s at 10 Hz before fitting.
+      # Warm-up + detector knobs; ~300 samples ≈ 30s at 10 Hz before fitting.
       FLEET_ANOMALY_BASELINE: "300"
       FLEET_ZSCORE_SIGMA: "3.5"
       FLEET_IF_CONTAMINATION: "0.01"
@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/rules:/etc/prometheus/rules:ro   # SLI/SLO rule files (Chunk 18)
+      - ./prometheus/rules:/etc/prometheus/rules:ro   # SLI/SLO rule files
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"   # expose the Prometheus UI/targets page on the host for debugging
@@ -54,8 +54,7 @@ services:
       - anomaly
       - alertmanager   # start-order only; Prometheus retries the alertmanager connection on its own
 
-  # Chunk 22 — routing/dedup/silencing layer. Prometheus fires alerts *at* it (see prometheus.yml
-  # `alerting:`); Alertmanager groups them, applies the routing tree, and notifies Slack + the sink.
+  # Routing/dedup/suppression layer: Prometheus fires alerts at it, and it notifies Slack + the sink.
   alertmanager:
     image: prom/alertmanager:v0.27.0
     restart: unless-stopped
@@ -69,32 +68,29 @@ services:
       - "9093:9093"   # Alertmanager UI: see grouped/routed alerts and set silences
     depends_on:
       - alert-sink
-      - incidents   # start-order only; Alertmanager retries failed notifications on its own
+      - incidents
 
-  # Always-on local receiver so alerts are visible (with severity + attribution) without any external
-  # webhook. Wired into every Alertmanager receiver alongside the incident store below.
+  # Always-on local receiver so alerts are visible without any external webhook.
   alert-sink:
     build: ./alertmanager/sink
     restart: unless-stopped
     expose:
-      - "9095"   # only Alertmanager posts to it, over the internal network
+      - "9095"
 
-  # Chunk 24 — SQLite incident store: consumes the same Alertmanager webhook as the sink (firing opens
-  # an incident, resolved closes it), persists to a named volume, and exports fleet_incident_* metrics
-  # that Prometheus scrapes and the Grafana incident-timeline dashboard renders.
+  # SQLite incident store: same Alertmanager webhook as the sink (firing opens, resolved closes),
+  # persisted to a volume, exporting fleet_incident_* metrics for Prometheus and Grafana.
   incidents:
     build: ./incidents
     restart: unless-stopped
     environment:
       FLEET_INCIDENT_PORT: "9096"
       FLEET_INCIDENT_DB: /data/incidents.db
-      FLEET_REOPEN_WINDOW: "300"    # re-fire within 5m of resolve = same episode (matches group_interval)
-      FLEET_INCIDENT_EXPIRY: "18000" # force-close after 5h of silence (> repeat_interval, so still-firing
-                                     # alerts always re-notify before this; catches swallowed resolves)
+      FLEET_REOPEN_WINDOW: "300"     # re-fire within 5m of resolve = same episode
+      FLEET_INCIDENT_EXPIRY: "18000" # force-close after 5h silent (catches swallowed resolves)
     volumes:
-      - incidents-data:/data       # incident history must survive down/up — it IS the record
+      - incidents-data:/data
     ports:
-      - "9096:9096"   # published for humans: /incidents (JSON rows + timelines), /metrics
+      - "9096:9096"   # /incidents (JSON rows + timelines), /metrics
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -118,5 +114,5 @@ volumes:
   mosquitto-data:
   prometheus-data:
   grafana-data:
-  alertmanager-data:   # Alertmanager's silences + notification state survive down/up
-  incidents-data:      # the SQLite incident history — the durable record of every incident
+  alertmanager-data:   # silences + notification state
+  incidents-data:      # the SQLite incident history
