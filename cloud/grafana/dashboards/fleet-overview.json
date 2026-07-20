@@ -1,0 +1,539 @@
+{
+  "uid": "fleet-overview",
+  "title": "Fleet — Overview",
+  "description": "The fleet at a glance: liveness, SLO state, anomaly detection and incident response on one screen. Every table row and hero tile drills into the detailed dashboards.",
+  "tags": ["fleet", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "graphTooltip": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "links": [
+    {
+      "title": "Per-Device",
+      "type": "link",
+      "url": "/d/fleet-device/fleet-per-device",
+      "icon": "dashboard",
+      "keepTime": true,
+      "targetBlank": false
+    },
+    {
+      "title": "Anomaly Detection",
+      "type": "link",
+      "url": "/d/fleet-anomaly/fleet-anomaly-detection",
+      "icon": "dashboard",
+      "keepTime": true,
+      "targetBlank": false
+    },
+    {
+      "title": "Incidents",
+      "type": "link",
+      "url": "/d/fleet-incidents/fleet-incidents",
+      "icon": "dashboard",
+      "keepTime": true,
+      "targetBlank": false
+    },
+    {
+      "title": "Inject faults",
+      "type": "link",
+      "url": "http://localhost:9097",
+      "icon": "bolt",
+      "keepTime": false,
+      "targetBlank": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Devices online",
+      "description": "sum(fleet:device_up:bool) — devices whose last message is under 10s old. The sparkline is the recent history.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(fleet:device_up:bool) or vector(0)", "legendFormat": "online" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "Availability — SLO ≥ 95%",
+      "description": "fleet:availability:ratio — fraction of the fleet currently fresh. Goes red exactly when the availability SLO alert would fire.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "fleet:availability:ratio", "instant": true, "legendFormat": "availability" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 0,
+          "min": 0,
+          "max": 1,
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.95 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Ingest rate",
+      "description": "sum(rate(fleet_messages_total[$__rate_interval])) — fleet-wide messages/second; a healthy device contributes ~10/s.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fleet_messages_total[$__rate_interval])) or vector(0)", "legendFormat": "msg/s" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:msg/s",
+          "decimals": 1,
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Ingest errors — SLO < 0.1%",
+      "description": "fleet:ingest_error:ratio_rate5m — malformed frames as a share of all frames over 5m. Machine-generated NDJSON should essentially always parse.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "fleet:ingest_error:ratio_rate5m", "instant": true, "legendFormat": "error ratio" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "noValue": "0%",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Anomalous channels",
+      "description": "sum(fleet_anomaly_flag{detector=\"zscore\"}) — device × channel pairs the alerting z-score/MAD detector flags right now. Click through for the detector view.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(fleet_anomaly_flag{detector=\"zscore\"}) or vector(0)", "legendFormat": "anomalous" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "links": [
+            {
+              "title": "Open anomaly detection",
+              "url": "/d/fleet-anomaly/fleet-anomaly-detection?${__url_time_range}"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Active incidents",
+      "description": "sum(fleet_incidents_open) — incidents the store currently holds open. Click through for the timeline and MTTR.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(fleet_incidents_open) or vector(0)", "legendFormat": "open" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "links": [
+            {
+              "title": "Open incident timeline",
+              "url": "/d/fleet-incidents/fleet-incidents?${__url_time_range}"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Device status — worst first (click a row to drill into the device)",
+      "description": "Status is derived in PromQL, not stored: OFFLINE = stale > 10s (the per-device freshness SLO), DEGRADED = fresh but ≥ 1 channel flagged by the alerting z-score detector, HEALTHY = fresh and quiet. Incidents counts this device's open rows in the incident store.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (device) (fleet:device_up:bool) * (2 - (clamp_max(sum by (device) (fleet_anomaly_flag{detector=\"zscore\"}), 1) or (0 * max by (device) (fleet:device_up:bool))))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "max by (device) (fleet:device_freshness_seconds)",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (device) (rate(fleet_messages_total[$__rate_interval]))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "(sum by (device) (fleet_anomaly_flag{detector=\"zscore\"}) and max by (device) (fleet:device_up:bool)) or (0 * max by (device) (fleet:device_up:bool))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "E",
+          "expr": "(sum by (device) (fleet_incident_active{device!=\"\"}) and max by (device) (fleet:device_up:bool)) or (0 * max by (device) (fleet:device_up:bool))",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true },
+            "indexByName": {
+              "Value #A": 0,
+              "device": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5
+            },
+            "renameByName": {
+              "device": "Device",
+              "Value #A": "Status",
+              "Value #B": "Last seen",
+              "Value #C": "Msg rate",
+              "Value #D": "Anomalies",
+              "Value #E": "Incidents"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "filterable": false, "align": "auto" },
+          "links": [
+            {
+              "title": "Open device dashboard — ${__data.fields.Device}",
+              "url": "/d/fleet-device/fleet-per-device?var-device=${__data.fields.Device}&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Status" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+              { "id": "custom.align", "value": "center" },
+              { "id": "custom.width", "value": 120 },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": {
+                  "0": { "text": "OFFLINE", "color": "red", "index": 0 },
+                  "1": { "text": "DEGRADED", "color": "orange", "index": 1 },
+                  "2": { "text": "HEALTHY", "color": "green", "index": 2 }
+                }}
+              ]}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Last seen" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 1 },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 3 },
+                { "color": "red", "value": 10 }
+              ]}}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Msg rate" },
+            "properties": [
+              { "id": "unit", "value": "suffix:msg/s" },
+              { "id": "decimals", "value": 1 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Anomalies" },
+            "properties": [
+              { "id": "decimals", "value": 0 },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "text", "value": null },
+                { "color": "orange", "value": 1 }
+              ]}}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Incidents" },
+            "properties": [
+              { "id": "decimals", "value": 0 },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "text", "value": null },
+                { "color": "red", "value": 1 }
+              ]}}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "sortBy": [{ "displayName": "Status", "desc": false }]
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Devices online & ingest rate",
+      "description": "Fleet liveness vs throughput: devices online (left axis) should sit at fleet size, ingest rate (right) at ~10 msg/s per device — a dead device shows in both at once.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 5 },
+      "targets": [
+        { "refId": "A", "expr": "sum(fleet:device_up:bool) or vector(0)", "legendFormat": "devices online" },
+        { "refId": "B", "expr": "sum(rate(fleet_messages_total[$__rate_interval])) or vector(0)", "legendFormat": "ingest rate" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "devices online" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } },
+              { "id": "custom.lineInterpolation", "value": "stepAfter" },
+              { "id": "custom.fillOpacity", "value": 20 },
+              { "id": "custom.axisPlacement", "value": "left" },
+              { "id": "unit", "value": "none" },
+              { "id": "decimals", "value": 0 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "ingest rate" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "custom.fillOpacity", "value": 8 },
+              { "id": "unit", "value": "suffix:msg/s" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Active incidents (click a row for the incident timeline)",
+      "description": "fleet_incident_active == 1 — open incidents with alert, severity and scope. Fleet-scoped rows (availability, error rate, pipeline) have no device: one row for the systemic event, not one per device. Empty table = healthy fleet.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (alertname, severity, scope, device, channel) (fleet_incident_active) == 1",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true },
+            "indexByName": { "alertname": 0, "severity": 1, "scope": 2, "device": 3, "channel": 4 },
+            "renameByName": {
+              "alertname": "Alert",
+              "severity": "Severity",
+              "scope": "Scope",
+              "device": "Device",
+              "channel": "Channel"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "filterable": false, "align": "auto" },
+          "noValue": "—",
+          "links": [
+            {
+              "title": "Open incident timeline",
+              "url": "/d/fleet-incidents/fleet-incidents?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Severity" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+              { "id": "custom.align", "value": "center" },
+              { "id": "custom.width", "value": 110 },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": {
+                  "critical": { "text": "critical", "color": "red", "index": 0 },
+                  "warning": { "text": "warning", "color": "orange", "index": 1 }
+                }}
+              ]}
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "md" }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Anomalies & open incidents",
+      "description": "Detection → response: channels flagged by the alerting detector (orange) and incidents held open by the store (red). A fault reads as an orange step, then a red one ~a minute later once the alert dwell passes; recovery unwinds both.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "targets": [
+        { "refId": "A", "expr": "sum(fleet_anomaly_flag{detector=\"zscore\"}) or vector(0)", "legendFormat": "anomalous channels" },
+        { "refId": "B", "expr": "sum(fleet_incidents_open) or vector(0)", "legendFormat": "open incidents" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 25,
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "anomalous channels" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "open incidents" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    }
+  ]
+}

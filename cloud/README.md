@@ -7,7 +7,7 @@ Cloud-side observability and reliability stack.
 - **Mosquitto** — MQTT broker (QoS, retained status, Last-Will-and-Testament).
 - **Prometheus + Grafana** — scraping, dashboards, per-device + fleet-overview boards.
 - **Anomaly detection** — two per-channel detectors (robust z-score / MAD baseline + Isolation Forest)
-  scored in parallel; Chunk 21 evaluates them and picks one for the alerting path.
+  scored in parallel, then evaluated head-to-head to pick one for the alerting path.
 - **Alerting** — severity-routed Slack alerts on SLO breach / anomaly, with dedup + suppression.
 - **Incident store** — SQLite, open-on-trip / close-on-recovery, with a Grafana timeline.
 - **Self-healing** — observe → diff → act remediation loop.
@@ -15,14 +15,16 @@ Cloud-side observability and reliability stack.
 Stood up first on **Docker Compose**, then migrated to **k3s** (Deployments/Services, liveness/
 readiness probes), packaged with **Helm**, and synced via **ArgoCD** (GitOps).
 
-## Running the stack (Chunk 16)
+## Running the stack
 
 ```bash
 cd cloud
 docker compose up -d --build          # mosquitto + bridge + prometheus + grafana
 ```
 
-- Grafana: http://localhost:3000 (admin/admin) → dashboard **Fleet → Fleet — Per-Device**
+- Grafana: http://localhost:3000 (admin/admin) — opens straight onto **Fleet — Overview**
+  (the home dashboard); the per-device, anomaly, and incident boards are linked from its top bar
+  and from every table row.
 - Prometheus targets: http://localhost:9090/targets (the `fleet-bridge` job should be UP)
 - No Pi on this box? Run the simulated fleet: `docker compose --profile sim up -d` (see below).
 - Real Pi gateway: point it at this host — `FLEET_BROKER_HOST=<laptop-ip>` — and it publishes into the same broker.
@@ -55,25 +57,47 @@ standalone: `python simulator/fleet_simulator.py --devices 5`.
 
 Layout: [`docker-compose.yml`](docker-compose.yml), [`mosquitto/`](mosquitto/),
 [`prometheus/`](prometheus/), [`grafana/provisioning`](grafana/provisioning) (datasource + dashboard
-provider), [`grafana/dashboards`](grafana/dashboards) (the per-device board, Chunk 17).
+provider), [`grafana/dashboards`](grafana/dashboards) (all four boards, provisioned from git).
 
-## Anomaly detection (Chunk 20)
+## Fleet overview dashboard
+
+**Fleet — Overview** (`fleet-overview`) is the hero board and Grafana's home page — one glance answers
+"is the fleet OK, and if not, where?":
+
+- **Hero row** — devices online, availability vs the 95% SLO (gauge goes red exactly when the SLO
+  alert would fire), fleet ingest rate, ingest error rate vs SLO, anomalous channels on the alerting
+  detector, and open incidents. Healthy fleet = an all-green row.
+- **Device status table, worst first.** Status is *derived in PromQL at query time*, not stored
+  anywhere: `OFFLINE` = freshness > 10s (the per-device SLO breached), `DEGRADED` = fresh but ≥ 1
+  channel flagged by the z-score detector, `HEALTHY` = fresh and quiet. Columns for last-seen,
+  per-device ingest rate, anomalous channels, and open incidents; clicking any row drills into
+  **Fleet — Per-Device** for that device.
+- **Active incidents table** — open incidents with severity and scope; rows click through to the
+  incident timeline.
+- **Six-hour trends** — devices online + ingest rate, and anomalous channels + open incidents (the
+  detection → incident → recovery arc of a fault, on one chart).
+
+Demo flow: `docker compose --profile sim up -d`, open Grafana, inject a fault from the top-bar
+**Inject faults** link (:9097) — the anomaly tile, incident tile, tables, and trends light up in
+sequence, then clear it and watch the board go green again.
+
+## Anomaly detection
 
 The [`anomaly/`](anomaly/) service is a **second** MQTT subscriber (independent of the bridge — that's
 the point of pub/sub) that runs **two** detectors per channel: a robust z-score / MAD baseline and an
 Isolation Forest. Both fit once on a warm-up window (~300 samples ≈ 30s at 10 Hz), then score live and
 export `fleet_anomaly_score` / `fleet_anomaly_flag` (normalized so `1.0` is each detector's trip line),
-plus the statistical band (`fleet_channel_baseline_lower/upper`). Neither is wired to alerting yet —
-Chunk 21 evaluates them on false positives / detection latency and picks one.
+plus the statistical band (`fleet_channel_baseline_lower/upper`). Only one of them alerts — the
+evaluation below measures false positives / detection latency and picks it.
 
 - Dashboard: Grafana → **Fleet → Fleet — Anomaly Detection**
 - See both detectors trip: warm up on clean data, then inject a perturbation on one channel:
   `python tools/fake_telemetry.py --devices 3 --anomaly temp`
   (waits ~35s so the baseline fits first, then toggles the anomaly on/off every 15s)
 - Detector knobs (baseline size, z-score sigma, IF contamination) are env vars on the `anomaly` service
-  in [`docker-compose.yml`](docker-compose.yml) — Chunk 21 tuning is a config change, not a rebuild.
+  in [`docker-compose.yml`](docker-compose.yml) — tuning is a config change, not a rebuild.
 
-## Detector evaluation → pick one (Chunk 21)
+## Detector evaluation → pick one
 
 [`anomaly/evaluate.py`](anomaly/evaluate.py) scores **both** detectors offline (no Pi, no broker) on
 labelled synthetic data from the same generator, measuring false-positive rate on clean data and
@@ -88,10 +112,10 @@ python anomaly/evaluate.py          # prints per-channel tables + the decision s
 ~one-sample latency. Full evidence, limitations (periodic-channel misses, regime-change false positives),
 the contamination/threshold tradeoff, and when IF *would* win (multivariate joint anomalies) are written
 up in [`docs/detector-evaluation.md`](../docs/detector-evaluation.md). The chosen detector is recorded as
-`ALERTING_DETECTOR` in [`anomaly/anomaly_service.py`](anomaly/anomaly_service.py); Chunk 22 wires its flag
-to paging.
+`ALERTING_DETECTOR` in [`anomaly/anomaly_service.py`](anomaly/anomaly_service.py); its flag is what
+alerting pages on.
 
-## SLIs / SLOs (Chunk 18)
+## SLIs / SLOs
 
 [`prometheus/rules/fleet_slos.yml`](prometheus/rules/fleet_slos.yml) defines the SLIs as `fleet:...`
 recording rules (freshness, availability, ingest error rate) and the SLO targets as alert thresholds.
@@ -102,7 +126,7 @@ Targets and rationale are documented in the [root README](../README.md#slis--slo
 
 After editing the rules, reload Prometheus: `docker compose kill -s SIGHUP prometheus` (or restart it).
 
-## Alerting: severity + routing (Chunk 22)
+## Alerting: severity + routing
 
 Prometheus decides **when** an alert fires; [Alertmanager](alertmanager/alertmanager.yml) decides **who**
 hears it and **how loud**. Prometheus (`alerting:` in [prometheus.yml](prometheus/prometheus.yml)) pushes

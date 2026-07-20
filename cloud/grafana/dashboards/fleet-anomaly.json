@@ -32,7 +32,7 @@
       "id": 1,
       "type": "state-timeline",
       "title": "Anomaly flags — both detectors × channel",
-      "description": "fleet_anomaly_flag for $device: 1 (coloured) when a detector is past its threshold this sample. Two detectors × four channels side by side — this is the Chunk 20 comparison: where they agree and where they don't, which is what Chunk 21 quantifies before picking one for the alerting path.",
+      "description": "fleet_anomaly_flag for $device: 1 (coloured) when a detector is past its threshold this sample. Two detectors × four channels side by side — where they agree and where they don't is what the offline evaluation quantified before picking one for the alerting path.",
       "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
       "targets": [
@@ -98,7 +98,7 @@
       "id": 3,
       "type": "timeseries",
       "title": "Temperature — anomaly scores",
-      "description": "fleet_anomaly_score for both detectors, normalized so 1.0 is each detector's trip line (red). Watch both climb past 1.0 when the channel is perturbed; the shapes differ because the estimators differ — that difference is the Chunk 21 evaluation.",
+      "description": "fleet_anomaly_score for both detectors, normalized so 1.0 is each detector's trip line (red). Watch both climb past 1.0 when the channel is perturbed; the shapes differ because the estimators differ — exactly the difference the offline evaluation measured.",
       "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 7 },
       "targets": [
