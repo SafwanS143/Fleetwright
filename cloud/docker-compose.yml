@@ -92,8 +92,9 @@ services:
     ports:
       - "9096:9096"   # /incidents (JSON rows + timelines), /metrics
 
-  # Simulated device fleet. Gated behind the `sim` profile so a default `up` never competes with a real
-  # Pi publishing to the same broker: run with `docker compose --profile sim up -d`.
+  # Simulated device fleet: healthy by default, faults injected manually via the control page/curl.
+  # Gated behind the `sim` profile so a default `up` never competes with a real Pi on the same broker:
+  # run with `docker compose --profile sim up -d`.
   simulator:
     build: ./simulator
     restart: unless-stopped
@@ -102,6 +103,8 @@ services:
       FLEET_BROKER_HOST: mosquitto
       FLEET_BROKER_PORT: "1883"
       FLEET_SIM_DEVICES: "5"
+    ports:
+      - "9097:9097"   # fault-control page + /fault + /clear + /state
     depends_on:
       - mosquitto
 

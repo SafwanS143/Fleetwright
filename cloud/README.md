@@ -30,19 +30,28 @@ docker compose up -d --build          # mosquitto + bridge + prometheus + grafan
 ## Simulated fleet
 
 The [simulator/](simulator/) service publishes **N independent device streams** to MQTT — each with its
-own baseline (so no two look cloned) and its own small state machine that occasionally drifts into a
-channel anomaly or an offline outage. That gives the reliability stack a realistic, self-driving
-workload: the point is the *workload* (many streams, real faults), not the device count, so a modest 5
-devices exercises everything a hundred would.
+own baseline, so no two look cloned. The fleet is **healthy and silent by default**; you inject faults
+**manually**, so the stack only pages you when you decide to break something. The point is the *workload*
+(independent streams, real faults on demand), not the device count — a modest 5 devices exercises
+everything a hundred would.
 
 ```bash
-docker compose --profile sim up -d          # starts 5 simulated devices (profile-gated)
+docker compose --profile sim up -d          # 5 healthy simulated devices (profile-gated)
 ```
 
-Profile-gated so a default `up` never starts it — a real Pi and the simulator would otherwise both
-publish to the same broker. Knobs are env vars on the `simulator` service (device count, rate, anomaly/
-offline probabilities, warm-up). You can also run it standalone against a laptop broker:
-`python simulator/fleet_simulator.py --devices 5`.
+**Inject faults** from the control page **http://localhost:9097** (a button grid per device) or by curl:
+
+```bash
+curl -X POST "localhost:9097/fault?device=sim-01&type=anomaly&channel=temperature&duration=90"
+curl -X POST "localhost:9097/fault?device=sim-02&type=offline"     # sticky until cleared
+curl -X POST "localhost:9097/clear?device=sim-01"                  # or /clear for the whole fleet
+curl "localhost:9097/state"                                        # current mode of each device
+```
+
+`type` is `anomaly` (with a `channel` of temperature/humidity/pressure/accel) or `offline`; `duration`
+in seconds auto-clears, `0`/omitted stays until you clear it. Profile-gated so a default `up` never
+starts it — a real Pi and the simulator would otherwise both publish to the same broker. Also runnable
+standalone: `python simulator/fleet_simulator.py --devices 5`.
 
 Layout: [`docker-compose.yml`](docker-compose.yml), [`mosquitto/`](mosquitto/),
 [`prometheus/`](prometheus/), [`grafana/provisioning`](grafana/provisioning) (datasource + dashboard
