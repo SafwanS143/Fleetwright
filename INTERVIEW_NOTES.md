@@ -526,14 +526,14 @@ end, not the writeup itself._
 - How a device's **status is derived** — how freshness, SLO state, and anomaly flags combine into one
   healthy / degraded / offline verdict per device.
 
-  _(your answer here)_
+  The status isn't stored on DBs, they're calculated live on the dashboard. They show the freshness, and state the status as healthy, degraded or offline as appropriate. If the device is offline, anomaly detection won't go off.
 
 **One-liner tier:**
 
 - How **rollups** aggregate — turning N per-device series into fleet-level numbers (devices online,
   ingest rate, active incidents).
 
-  _(your answer here)_
+  Devices online, ingest rate, and active incidents are literally just sums of the current stats for each device. Rates are wrapped in rate().
 
 ## Chunk 28 — Self-healing remediation
 
