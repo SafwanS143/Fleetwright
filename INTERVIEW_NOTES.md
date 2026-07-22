@@ -557,13 +557,19 @@ end, not the writeup itself._
 - Walk an interviewer through the **postmortem** end to end: timeline, impact, root cause, what worked,
   action items.
 
-  _(your answer here)_
+- Problem: Added +8 degrees offset to fake sin graph of temperature. This was supposed to send an anomolous alert, but it didn't
+
+Impact: When I monitored the graph, it was beign anomolous, but the alert never showed
+
+Root cause: I noticed that the rule was that the avg_over_time over 1m would only fire if it was greater than 0.5, and the +8 offset only made it exactly 0.5.
+
+The rule worked, but still needed changes. A 50% anomolous read over 1m should alert. I changed the rule to account for another signal that detects a high magnitude using the direct score averaged over a minute, and adjusted the test to a higher value.
 
 **One-liner tier:**
 
 - What **blameless** means and why — focus on the system/process failure, not individual blame, so
   people surface what actually happened.
 
-  _(your answer here)_
+  Blame systems not people.
 
 <!-- Phases 6-7 stubs added as you reach them. -->

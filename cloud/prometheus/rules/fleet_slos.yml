@@ -105,12 +105,16 @@ groups:
 
   - name: fleet_anomaly_alerts
     rules:
-      # Fires on the chosen z-score/MAD detector only (0.000 FP rate; see docs/detector-evaluation.md);
-      # Isolation Forest stays dashboard-only. avg_over_time[1m] > 0.5 requires the channel to read
-      # anomalous for the majority of a minute (dwell), so a blip or brief wobble never pages.
+      # Chosen z-score/MAD detector only (0.000 FP rate; see docs/detector-evaluation.md); IF stays
+      # dashboard-only. Two complementary arms, one alert (dedup stays per device/channel). Duty arm:
+      # anomalous for the majority of a minute. Magnitude arm: average score itself well past the trip
+      # line — catches decisive-but-intermittent spikes that never hold the majority the duty arm needs.
       # keep_firing_for 2m clears slowly too, fusing an intermittent fault into one continuous alert.
       - alert: FleetChannelAnomaly
-        expr: avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5
+        expr: |
+          avg_over_time(fleet_anomaly_flag{detector="zscore"}[1m]) > 0.5
+          or
+          avg_over_time(fleet_anomaly_score{detector="zscore"}[1m]) > 1.5
         for: 30s
         keep_firing_for: 2m
         labels:
