@@ -543,7 +543,12 @@ end, not the writeup itself._
   compares against, what action it takes — and how this is the same model as k8s liveness/readiness
   probes you build in Phase 7.
 
-  _(your answer here)_
+  A control loop is a loop that repeats 3 key ideas every interval
+  1 - Observe (Prometheus). This checks Prometheus for the current state of the system. In this case it's the device count, freshness, and ingest rate
+  2 - Diff. This compares the current state with a predetermined healthy state, which is all devices up, no anomalies, etc.
+  3 - If the current state isn't healthy, it will try a broad resolution (reboot of MQTT, restarting containers etc.).
+
+  This is very similar to what k8s already does, but it takes away the whole loop part and just needs a healthy state input.
 
 ## Chunk 29 — Blameless postmortem
 
