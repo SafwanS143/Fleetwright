@@ -185,6 +185,38 @@ def make_handler(devices):
     return Handler
 
 
+# Downlink command topic the self-healing controller (and, later, the OTA control plane) publishes to.
+CMD_TOPIC = "fleet/+/cmd"
+
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code.is_failure:
+        print(f"[sim] connect failed: {reason_code}", flush=True)
+        return
+    client.subscribe(CMD_TOPIC, qos=1)
+    print(f"[sim] subscribed to {CMD_TOPIC} (command downlink)", flush=True)
+
+
+def on_command(client, userdata, msg):
+    """Apply a downlink command to one device. A reboot clears the injected fault and restarts the
+    sequence — the simulated equivalent of power-cycling a wedged unit back to a known-good state."""
+    devices = userdata
+    parts = msg.topic.split("/")
+    dev = devices.get(parts[1]) if len(parts) >= 3 else None
+    if not dev:
+        return
+    try:
+        cmd = json.loads(msg.payload.decode("utf-8")).get("cmd")
+    except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+        return
+    if cmd in ("reboot", "reset", "clear"):
+        with STATE_LOCK:
+            was = dev.mode
+            dev.clear()
+            dev.seq = 0   # a reboot restarts the sequence; the bridge reads a seq reset as a reboot
+        print(f"[sim] {dev.id}: '{cmd}' downlink -> {was} cleared, rebooted", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=env("FLEET_BROKER_HOST", "127.0.0.1"))
@@ -206,6 +238,9 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="fleet-sim")
+    client.user_data_set(devices)
+    client.on_connect = on_connect
+    client.on_message = on_command
     client.connect(args.host, args.port, keepalive=30)
     client.loop_start()
 

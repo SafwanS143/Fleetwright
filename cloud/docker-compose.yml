@@ -92,6 +92,30 @@ services:
     ports:
       - "9096:9096"   # /incidents (JSON rows + timelines), /metrics
 
+  # Self-healing control loop: reads desired-vs-actual from Prometheus, publishes reboot commands on the
+  # device downlink to close the gap (incident auto-closes on recovery), and optionally restarts a hung
+  # cloud service via the Docker socket. Part of the always-on control plane — idle until something breaks.
+  remediator:
+    build: ./remediator
+    restart: unless-stopped
+    environment:
+      FLEET_BROKER_HOST: mosquitto
+      FLEET_BROKER_PORT: "1883"
+      FLEET_PROM_URL: http://prometheus:9090
+      FLEET_METRICS_PORT: "9098"
+      FLEET_RECONCILE_INTERVAL: "15"
+      FLEET_FRESHNESS_THRESHOLD: "20"   # act past a clear SLO breach, not the 10s edge
+      FLEET_REMEDIATION_MAX_ATTEMPTS: "3"   # then stop and escalate to a human
+      FLEET_HEAL_SERVICES: "true"       # restart a hung bridge/anomaly/incidents container
+    volumes:
+      # Root-on-host equivalent: the whole reason service-healing is gated and k8s probes replace it.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "9098:9098"   # /metrics + /state (what the loop is currently working)
+    depends_on:
+      - mosquitto
+      - prometheus
+
   # Simulated device fleet: healthy by default, faults injected manually via the control page/curl.
   # Gated behind the `sim` profile so a default `up` never competes with a real Pi on the same broker:
   # run with `docker compose --profile sim up -d`.

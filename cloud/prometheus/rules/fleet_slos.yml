@@ -86,6 +86,23 @@ groups:
           description: "Prometheus cannot scrape the bridge; freshness / availability / error SLIs are all blind."
           runbook_url: "docs/runbooks/ingest-pipeline-down.md"
 
+  - name: fleet_remediation_alerts
+    rules:
+      # Self-healing gave up: it tried its capped attempts and the target is still bad. This is the only
+      # remediation event that *should* page — the loop absorbs the transient faults, a human owns the
+      # ones it can't. for: 1m so a target mid-recovery doesn't flap this.
+      - alert: FleetRemediationExhausted
+        expr: fleet_remediation_exhausted > 0
+        for: 1m
+        labels:
+          severity: critical
+          sli: remediation
+          team: platform
+        annotations:
+          summary: "Automated remediation exhausted for {{ $labels.target }}"
+          description: "Self-healing capped its attempts on {{ $labels.target }} ({{ $labels.reason }}) and it's still unhealthy — needs a human."
+          runbook_url: "docs/runbooks/remediation-exhausted.md"
+
   - name: fleet_anomaly_alerts
     rules:
       # Fires on the chosen z-score/MAD detector only (0.000 FP rate; see docs/detector-evaluation.md);

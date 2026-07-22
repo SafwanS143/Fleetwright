@@ -76,10 +76,54 @@ provider), [`grafana/dashboards`](grafana/dashboards) (all four boards, provisio
   incident timeline.
 - **Six-hour trends** — devices online + ingest rate, and anomalous channels + open incidents (the
   detection → incident → recovery arc of a fault, on one chart).
+- **Self-healing row** — auto-remediations and auto-recoveries (last hour), anything escalated to a
+  human (should read 0), and a chart of remediation actions against open incidents: the loop visibly
+  closing the loop.
 
 Demo flow: `docker compose --profile sim up -d`, open Grafana, inject a fault from the top-bar
 **Inject faults** link (:9097) — the anomaly tile, incident tile, tables, and trends light up in
 sequence, then clear it and watch the board go green again.
+
+## Self-healing
+
+The [`remediator/`](remediator/) service is a **control loop** — the same shape a Kubernetes controller
+runs. Every 15s it **observes** actual state from Prometheus (the same freshness / anomaly series the
+alerts fire on), **diffs** it against desired (every device healthy), and **acts** on the gap:
+
+- **Device stale / anomalous** → publishes a `reboot` command on the device's MQTT downlink
+  (`fleet/<id>/cmd`). The simulator (and, later, the real gateway → firmware) applies it and the device
+  recovers; its SLO alert resolves and the incident **auto-closes** — no human touch. This reuses the
+  downlink topic the OTA path is built on next.
+- **A cloud service hung / unscrapeable** (`up{job=…} == 0`) → restarts that container via the Docker
+  socket. Docker's own `restart:` already covers a *crashed* container, so this only earns its keep on
+  the case Docker misses — a container alive but not serving. It's the compose-era stand-in for a
+  Kubernetes **liveness probe**, and it's env-gated (`FLEET_HEAL_SERVICES`) because the Docker socket is
+  root-on-host.
+
+**Guardrails are what make it heal instead of thrash:**
+
+- **Cooldown** (60s) after each action so recovery has time to take before the loop re-acts.
+- **Capped attempts + escalation** — after 3 tries a target is marked `fleet_remediation_exhausted` and
+  the loop **stops and pages** (`FleetRemediationExhausted`, critical). A reboot loop that never fixes
+  anything is worse than paging a human — this is the same idea as k8s `CrashLoopBackOff`.
+- **Grace** on services (45s) so it never races Docker's own faster restart.
+- **Fail safe:** if it can't reach Prometheus it skips the cycle rather than acting on stale state.
+
+The healer exports its own metrics so automation you can't see doesn't become a liability:
+`fleet_remediation_attempts_total`, `fleet_remediation_recovered_total`, `fleet_remediation_exhausted`,
+and `fleet_reconcile_loops_total` (its heartbeat). The **Self-healing** row on *Fleet — Overview* shows
+auto-remediations, auto-recoveries, and anything escalated to a human.
+
+```bash
+# Watch it heal a device with no human touch:
+curl -X POST "localhost:9097/fault?device=sim-03&type=offline"   # take one device down
+docker compose logs -f remediator                                # reboot -> RECOVERED in ~1 cycle
+curl localhost:9098/state                                        # what the loop is currently working
+```
+
+Part of the always-on control plane (not the `sim` profile) — idle when the fleet is healthy, like any
+good controller. `FLEET_HEAL_SERVICES=false` turns off container restarts (and the Docker-socket mount)
+if you only want device remediation.
 
 ## Anomaly detection
 

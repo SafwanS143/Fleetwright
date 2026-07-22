@@ -39,6 +39,13 @@ scrape_configs:
         labels:
           service: incident-store
 
+  # Remediator: self-healing attempts, recoveries, and escalations. Human-speed, so 15s is plenty.
+  - job_name: fleet-remediator
+    static_configs:
+      - targets: ["remediator:9098"]   # docker-network DNS name of the remediator
+        labels:
+          service: remediator
+
   # Prometheus scraping itself — free `up`/TSDB health, and a sanity target while wiring the stack.
   - job_name: prometheus
     static_configs:

@@ -14,6 +14,7 @@ known-good action, and know when to escalate.
 | `FleetAvailabilityBelowSLO` | critical | [fleet-availability.md](fleet-availability.md) |
 | `FleetIngestPipelineDown` | critical | [ingest-pipeline-down.md](ingest-pipeline-down.md) |
 | `FleetHighErrorRate` | warning | [ingest-errors.md](ingest-errors.md) |
+| `FleetRemediationExhausted` | critical | [remediation-exhausted.md](remediation-exhausted.md) |
 
 **Fast links:** Grafana http://localhost:3000 · Prometheus alerts http://localhost:9090/alerts ·
 targets http://localhost:9090/targets · Alertmanager http://localhost:9093 · open incidents

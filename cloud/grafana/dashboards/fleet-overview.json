@@ -534,6 +534,141 @@
         "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
         "tooltip": { "mode": "multi", "sort": "desc" }
       }
+    },
+
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Self-healing",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Auto-remediations (1h)",
+      "description": "sum(increase(fleet_remediation_attempts_total[1h])) — recovery actions the control loop took on its own (reboot commands + service restarts) in the last hour.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 24 },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(fleet_remediation_attempts_total[1h])) or vector(0)", "legendFormat": "actions" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "blue", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Auto-recovered (1h)",
+      "description": "sum(increase(fleet_remediation_recovered_total[1h])) — targets that returned to healthy after the loop acted, i.e. faults resolved with no human touch.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 24 },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(fleet_remediation_recovered_total[1h])) or vector(0)", "legendFormat": "recovered" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "green", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Escalated — needs human",
+      "description": "sum(fleet_remediation_exhausted) — targets the loop tried its capped attempts on and gave up: automation can't fix these, so they page. Should read 0.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 24 },
+      "targets": [
+        { "refId": "A", "expr": "sum(fleet_remediation_exhausted) or vector(0)", "legendFormat": "escalated" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Self-healing vs open incidents",
+      "description": "The loop closing the loop: a remediation action (blue) fires against an open incident (red), and the incident count falls once the target recovers — automated response you can watch converge.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(fleet_remediation_attempts_total[$__rate_interval])) or vector(0)", "legendFormat": "remediation actions" },
+        { "refId": "B", "expr": "sum(fleet_incidents_open) or vector(0)", "legendFormat": "open incidents" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "none",
+          "decimals": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "remediation actions" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } },
+              { "id": "custom.drawStyle", "value": "bars" },
+              { "id": "custom.fillOpacity", "value": 60 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "open incidents" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+              { "id": "custom.lineInterpolation", "value": "stepAfter" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
     }
   ]
 }
