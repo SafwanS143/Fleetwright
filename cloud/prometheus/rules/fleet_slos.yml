@@ -125,3 +125,20 @@ groups:
           summary: "Anomaly on {{ $labels.device }} / {{ $labels.channel }}"
           description: "{{ $labels.channel }} on {{ $labels.device }} has been anomalous (z-score/MAD, sustained over 1m). Confirm it's a fault, not a legitimate regime change (see runbook)."
           runbook_url: "docs/runbooks/channel-anomaly.md"
+
+      # Severity fast-path: a pegged extreme excursion (score > 5 ≈ 17 robust-sigma) shouldn't wait out
+      # the 1m dwell. min_over_time[10s] requires every sample to stay extreme, so one glitch read breaks
+      # the min and can't trip it; pages critical in ~15s. keep_firing_for rides out brief dips. The
+      # critical inhibits this channel's warning in Alertmanager, so one extreme fault pages once.
+      - alert: FleetChannelAnomalyCritical
+        expr: min_over_time(fleet_anomaly_score{detector="zscore"}[10s]) > 5
+        for: 5s
+        keep_firing_for: 1m
+        labels:
+          severity: critical
+          sli: anomaly
+          team: device-reliability
+        annotations:
+          summary: "Extreme anomaly on {{ $labels.device }} / {{ $labels.channel }}"
+          description: "{{ $labels.channel }} on {{ $labels.device }} is pegged at an extreme excursion (z-score/MAD score {{ $value | printf \"%.1f\" }}, past the ~17-sigma fast-path). Likely a hard fault — paged without waiting out the dwell."
+          runbook_url: "docs/runbooks/channel-anomaly.md"

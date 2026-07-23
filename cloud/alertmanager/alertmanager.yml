@@ -108,3 +108,9 @@ inhibit_rules:
   # redundant detail; attribution stays on the dashboard and in the incident store.
   - source_matchers: [alertname = "FleetAvailabilityBelowSLO"]
     target_matchers: [alertname = "FleetDeviceStale"]
+
+  # An extreme excursion is the same fault the sustained-anomaly warning would report, only worse and
+  # faster — page the critical, mute the warning for that same channel. equal keeps it channel-scoped.
+  - source_matchers: [alertname = "FleetChannelAnomalyCritical"]
+    target_matchers: [alertname = "FleetChannelAnomaly"]
+    equal: [device, channel]
