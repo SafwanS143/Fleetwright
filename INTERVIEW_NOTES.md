@@ -572,4 +572,76 @@ The rule worked, but still needed changes. A 50% anomolous read over 1m should a
 
   Blame systems not people.
 
-<!-- Phases 6-7 stubs added as you reach them. -->
+# Phase 6 — OTA + demo (the showpiece)
+
+_Everything so far reads device → cloud. Phase 6 closes the loop the other way (cloud → device → ack),
+which is what turns "I monitored it" into "I controlled it." Interview weight sits on two things: why the
+gateway is the right relay point (Chunk 30) and why acks + idempotency are non-negotiable in a control
+loop (Chunk 31). Chunk 35 is the single most important asset in the whole project — the end-to-end
+troubleshooting walk. Everything else here is a demo; that one is the interview._
+
+**Tier 1 — Interview-critical, full depth:**
+
+1. Why the **gateway is the right place to relay** the downlink command — Chunk 30.
+2. The **full control loop**, and why **acks + idempotency** matter — Chunk 31.
+3. Closing the **cloud→device loop end to end** in one motion — Chunk 32.
+4. **Narrate the whole chain** as it happens, live — Chunk 33.
+5. The **end-to-end troubleshooting walk** — failure mode + detection signal at every hop — Chunk 35.
+
+## Chunk 30 — OTA downlink path
+
+**Interview-critical tier:**
+
+- Why the **gateway is the right place to relay** the command — why the cloud doesn't (and can't) talk
+  to the Nucleo directly, and what the gateway adds beyond being a wire.
+
+**One-liner tier:**
+
+- **Downlink topic design and command framing** — why a separate `fleet/<id>/cmd` topic rather than
+  reusing the telemetry topic, and how a command is framed on the UART.
+
+## Chunk 31 — Firmware applies + acks
+
+**Interview-critical tier:**
+
+- The **full control loop**: command published → gateway relays → firmware applies → ack travels back up
+  the telemetry path. Name each hop and what proves it happened.
+
+- Why **acks** matter — without one you have fire-and-forget, not a control loop; you can't tell "applied"
+  from "lost."
+
+- Why **idempotency** matters — re-applying the same command must be safe, because at QoS 1 a command can
+  arrive twice and a retry after a lost ack is indistinguishable from a first delivery.
+
+## Chunk 32 — Control surface
+
+**Interview-critical tier:**
+
+- Closing the **cloud→device loop end to end in one motion** — one action produces a visible behaviour
+  change on real hardware, and why that single motion is the thing worth demoing.
+
+## Chunk 33 — Physical fault-injection dry run
+
+**Interview-critical tier:**
+
+- **Narrate the whole chain as it happens**: physical fault → metric moves → anomaly trips → device flips
+  degraded → incident opens → alert fires (severity + routing) → remediation acts → recovery → back to
+  green. Be able to say what you'd expect *next* before it appears on screen.
+
+## Chunk 34 — Record the video
+
+_No defend questions — this chunk is a deliverable, not an argument. The narration is Chunk 33's chain._
+
+## Chunk 35 — End-to-end troubleshooting narrative
+
+**Interview-critical tier:**
+
+- **"Telemetry stopped — debug it."** Walk every hop, naming the failure mode *and* how you'd detect it:
+  firmware → UART → gateway parse → ring buffer → MQTT publish → broker → bridge → Prometheus scrape →
+  Grafana. The written version is the troubleshooting spine table in `docs/architecture.md`; this is
+  rehearsing it until it's reflexive, no notes.
+
+- Which hops fail **silently** (no error, just absence) versus loudly, and why freshness is the one signal
+  that catches all of them.
+
+<!-- Phase 7 stubs added as you reach them. -->
