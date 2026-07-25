@@ -125,6 +125,28 @@ Part of the always-on control plane (not the `sim` profile) — idle when the fl
 good controller. `FLEET_HEAL_SERVICES=false` turns off container restarts (and the Docker-socket mount)
 if you only want device remediation.
 
+## Control surface
+
+The [`control/`](control/) service is the **human-driven** end of the same cloud→device downlink the
+remediator uses. A served web panel — **http://localhost:9099** — lists each device and, on one click,
+publishes an OTA command on `fleet/<id>/cmd`, then shows the round trip land: the device's **ack** on
+`fleet/<id>/ack` and the **live telemetry rate**. Push a real Nucleo from 10→50 Hz and the rate meter
+jumps while the ack confirms it applied — one action, a visible behaviour change, its confirmation.
+
+- **Ack round-trip time is measured here** (publish → ack), so it spans the whole path: broker, gateway,
+  UART, firmware, and back. An ack is what makes this a control loop rather than fire-and-forget — you
+  can tell *applied* from *lost*. Commands are idempotent (`set_rate` lands the same period every time),
+  so a QoS-1 duplicate is harmless.
+- `set_rate` and `reboot` acks come from the **real device** firmware; simulators show status + rate but
+  don't ack `set_rate`. Command counts and ack latency export on `/metrics` (scraped as `fleet-control`).
+
+```bash
+# From the panel, or by curl:
+curl -X POST "localhost:9099/cmd?device=fleet-edge-01&cmd=set_rate&hz=25"
+curl -X POST "localhost:9099/cmd?device=fleet-edge-01&cmd=reboot"
+curl "localhost:9099/state"    # per-device status, observed Hz, last ack + rtt
+```
+
 ## Anomaly detection
 
 The [`anomaly/`](anomaly/) service is a **second** MQTT subscriber (independent of the bridge — that's

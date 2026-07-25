@@ -44,6 +44,7 @@ _MIN_STD_DEFAULTS = {
     "humidity": 0.8,          # %RH  (~BME280 humidity accuracy ±3%)
     "pressure": 0.16,         # hPa  (~4-5x relative-pressure noise)
     "accel_magnitude": 0.02,  # g
+    "gyro_magnitude": 3.0,    # dps  (well above the sub-1 dps resting noise, below a real hand-twist)
 }
 
 
@@ -102,6 +103,10 @@ def _channels(data: dict):
         yield "pressure", float(data["pressure"])
     if all(k in data for k in ("ax", "ay", "az")):
         yield "accel_magnitude", math.sqrt(data["ax"] ** 2 + data["ay"] ** 2 + data["az"] ** 2)
+    # Rotation (a twist) barely moves accel magnitude — gravity's vector length is conserved — so it
+    # only shows up on the gyro. Score gyro magnitude too, or a spin is invisible to anomaly detection.
+    if all(k in data for k in ("gx", "gy", "gz")):
+        yield "gyro_magnitude", math.sqrt(data["gx"] ** 2 + data["gy"] ** 2 + data["gz"] ** 2)
 
 
 def _get(device: str, channel: str) -> ChannelDetectors:

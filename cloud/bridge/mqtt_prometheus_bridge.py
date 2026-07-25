@@ -39,6 +39,11 @@ ACCEL_MAG = Gauge(
     "Last accelerometer magnitude sqrt(ax^2+ay^2+az^2); ~1.0 at rest (gravity).",
     ["device"],
 )
+GYRO_MAG = Gauge(
+    "fleet_gyro_magnitude_dps",
+    "Last gyro magnitude sqrt(gx^2+gy^2+gz^2); ~0 at rest, spikes on a twist/rotation.",
+    ["device"],
+)
 
 # Freshness primitive: expose last-seen timestamp; age = time()-<this> at query time, so it climbs on its own when a device dies.
 LAST_MESSAGE_TS = Gauge(
@@ -123,6 +128,9 @@ def on_message(client, userdata, msg):
     if all(k in data for k in ("ax", "ay", "az")):
         mag = math.sqrt(data["ax"] ** 2 + data["ay"] ** 2 + data["az"] ** 2)
         ACCEL_MAG.labels(device=device).set(mag)
+    if all(k in data for k in ("gx", "gy", "gz")):
+        gmag = math.sqrt(data["gx"] ** 2 + data["gy"] ** 2 + data["gz"] ** 2)
+        GYRO_MAG.labels(device=device).set(gmag)
 
 
 def main():

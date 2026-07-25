@@ -116,6 +116,21 @@ services:
       - mosquitto
       - prometheus
 
+  # Operator control surface: web panel that publishes OTA commands on the device downlink and shows
+  # each command's ack + the live telemetry rate — the human-driven counterpart to the remediator.
+  control:
+    build: ./control
+    restart: unless-stopped
+    environment:
+      FLEET_BROKER_HOST: mosquitto
+      FLEET_BROKER_PORT: "1883"
+      FLEET_CONTROL_PORT: "9099"
+      FLEET_DEVICE_ID: fleet-edge-01   # always shown, so the panel isn't empty before the Pi publishes
+    ports:
+      - "9099:9099"   # control panel + /state + /cmd + /metrics
+    depends_on:
+      - mosquitto
+
   # Simulated device fleet: healthy by default, faults injected manually via the control page/curl.
   # Gated behind the `sim` profile so a default `up` never competes with a real Pi on the same broker:
   # run with `docker compose --profile sim up -d`.

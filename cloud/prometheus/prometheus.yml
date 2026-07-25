@@ -46,6 +46,13 @@ scrape_configs:
         labels:
           service: remediator
 
+  # Control surface: commands published, acks received, ack round-trip latency. Human-speed, so 15s.
+  - job_name: fleet-control
+    static_configs:
+      - targets: ["control:9099"]   # docker-network DNS name of the control surface
+        labels:
+          service: control-surface
+
   # Prometheus scraping itself — free `up`/TSDB health, and a sanity target while wiring the stack.
   - job_name: prometheus
     static_configs:

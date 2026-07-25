@@ -291,6 +291,64 @@
         },
         "overrides": []
       }
+    },
+
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Rotation (gyro magnitude) + statistical band",
+      "description": "fleet_gyro_magnitude_dps with the z-score/MAD normal band shaded. A twist/rotation spikes the gyro well outside the ~0 dps band — motion the accel magnitude can't see, since a rotation conserves gravity's vector length.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 35 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_gyro_magnitude_dps{device=\"$device\"}", "legendFormat": "value" },
+        { "refId": "B", "expr": "fleet_channel_baseline_upper{device=\"$device\", channel=\"gyro_magnitude\"}", "legendFormat": "band upper" },
+        { "refId": "C", "expr": "fleet_channel_baseline_lower{device=\"$device\", channel=\"gyro_magnitude\"}", "legendFormat": "band lower" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none", "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 2 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "band upper" }, "properties": [
+            { "id": "custom.fillBelowTo", "value": "band lower" },
+            { "id": "custom.lineWidth", "value": 1 },
+            { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 6] } },
+            { "id": "custom.fillOpacity", "value": 15 },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "super-light-blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "band lower" }, "properties": [
+            { "id": "custom.lineWidth", "value": 1 },
+            { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 6] } },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "super-light-blue" } }
+          ]},
+          { "matcher": { "id": "byName", "options": "value" }, "properties": [
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+          ]}
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Rotation — anomaly scores",
+      "description": "Normalized anomaly scores for both detectors; 1.0 (red) is the trip line.",
+      "datasource": { "type": "prometheus", "uid": "fleet-prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 35 },
+      "targets": [
+        { "refId": "A", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"gyro_magnitude\", detector=\"zscore\"}", "legendFormat": "z-score" },
+        { "refId": "B", "expr": "fleet_anomaly_score{device=\"$device\", channel=\"gyro_magnitude\", detector=\"iforest\"}", "legendFormat": "isolation forest" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 2, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "text", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      }
     }
   ]
 }
