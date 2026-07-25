@@ -634,6 +634,8 @@ troubleshooting walk. Everything else here is a demo; that one is the interview.
 - Closing the **cloud→device loop end to end in one motion** — one action produces a visible behaviour
   change on real hardware, and why that single motion is the thing worth demoing.
 
+  Same exact thing with The control loop, except it's initiated by a human, then sent to the cmd channel, forwarded to the Pi, UART to the firmware, changes are made, and then the ack bytes travel back thru the ack channel. The panel also shows the ackknowledgements.
+
 ## Chunk 33 — Physical fault-injection dry run
 
 **Interview-critical tier:**
