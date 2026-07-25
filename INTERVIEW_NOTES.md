@@ -595,10 +595,14 @@ troubleshooting walk. Everything else here is a demo; that one is the interview.
 - Why the **gateway is the right place to relay** the command — why the cloud doesn't (and can't) talk
   to the Nucleo directly, and what the gateway adds beyond being a wire.
 
+  Exact same reasoning as before. The MCU doesn't have any internet connectivity, while the Pi does and is already used to relay the telemetry to the cloud. The gateway also allows for clean parsing and ensuring that only proper commands reach the nucleo firmware via UART. The gateway is the relay and translator.
+
 **One-liner tier:**
 
 - **Downlink topic design and command framing** — why a separate `fleet/<id>/cmd` topic rather than
   reusing the telemetry topic, and how a command is framed on the UART.
+
+  Best practice to use the same device ID, splitting uplink (telemetry) and downlink (cmd) allows for proper separation between the two.
 
 ## Chunk 31 — Firmware applies + acks
 
@@ -626,7 +630,7 @@ troubleshooting walk. Everything else here is a demo; that one is the interview.
 
 - **Narrate the whole chain as it happens**: physical fault → metric moves → anomaly trips → device flips
   degraded → incident opens → alert fires (severity + routing) → remediation acts → recovery → back to
-  green. Be able to say what you'd expect *next* before it appears on screen.
+  green. Be able to say what you'd expect _next_ before it appears on screen.
 
 ## Chunk 34 — Record the video
 
@@ -636,7 +640,7 @@ _No defend questions — this chunk is a deliverable, not an argument. The narra
 
 **Interview-critical tier:**
 
-- **"Telemetry stopped — debug it."** Walk every hop, naming the failure mode *and* how you'd detect it:
+- **"Telemetry stopped — debug it."** Walk every hop, naming the failure mode _and_ how you'd detect it:
   firmware → UART → gateway parse → ring buffer → MQTT publish → broker → bridge → Prometheus scrape →
   Grafana. The written version is the troubleshooting spine table in `docs/architecture.md`; this is
   rehearsing it until it's reflexive, no notes.
