@@ -57,6 +57,7 @@ TOPIC_TELEMETRY = f"fleet/{DEVICE_ID}/telemetry"
 TOPIC_HEARTBEAT = f"fleet/{DEVICE_ID}/heartbeat"
 TOPIC_STATUS    = f"fleet/{DEVICE_ID}/status"   # retained connection state ONLY
 TOPIC_CMD       = f"fleet/{DEVICE_ID}/cmd"      # downlink: cloud -> device commands (OTA)
+TOPIC_ACK       = f"fleet/{DEVICE_ID}/ack"      # uplink: device -> cloud command acks
 
 # 30s => broker declares us dead after ~45s (1.5x keepalive). That's the MTTD floor for
 # gateway death: nothing downstream knows sooner. Chosen against the availability SLO.
@@ -251,6 +252,18 @@ def publish_heartbeat(client: mqtt.Client, state: dict, payload: str):
     log(f"[mqtt] {TOPIC_HEARTBEAT} {payload}")
 
 
+def publish_ack(client: mqtt.Client, state: dict, payload: str):
+    """Command acks get their own topic (a control-plane response, not sensor telemetry, so it
+    must not be scored by the bridge/anomaly). QoS 1: a confirmation shouldn't be silently lost.
+    Not buffered: a stale replayed ack is misleading, and commands are idempotent -- re-send instead."""
+    if not state["connected"]:
+        state["ack_dropped"] += 1
+        return
+    client.publish(TOPIC_ACK, payload, qos=1, retain=False)
+    state["ack_published"] += 1
+    log(f"[mqtt] {TOPIC_ACK} {payload}")
+
+
 def handle_line(raw: bytes, client: mqtt.Client, state: dict):
     """Parse one line as JSON and route it. Malformed lines are counted and dropped
     before the buffer or MQTT, so framing/parse faults stay upstream of the gateway."""
@@ -263,10 +276,13 @@ def handle_line(raw: bytes, client: mqtt.Client, state: dict):
 
     payload = json.dumps(msg)
 
-    # Heartbeat gets its own topic (device liveness != link liveness); publishing it to
-    # /status would clobber the retained will marker.
-    if msg.get("type") == "heartbeat":
+    # Heartbeats and acks each get their own topic and bypass the buffer: they're liveness /
+    # control signals, not sensor telemetry, and a replayed stale one would mislead.
+    mtype = msg.get("type")
+    if mtype == "heartbeat":
         publish_heartbeat(client, state, payload)   # bypasses the buffer, by design
+    elif mtype == "ack":
+        publish_ack(client, state, payload)         # control-plane response, own topic
     else:
         enqueue(state, payload)                     # the buffer is the only publisher
 
@@ -283,6 +299,8 @@ def main():
         "cmd_relayed": 0,    # commands written down to the Nucleo
         "cmd_dropped": 0,    # commands evicted by a full downlink queue
         "cmd_errors": 0,     # non-JSON downlinks refused before the UART
+        "ack_published": 0,  # command acks forwarded up to the ack topic
+        "ack_dropped": 0,    # acks lost because the broker link was down
     }
 
     ser = open_serial()
@@ -323,7 +341,7 @@ def main():
                 log(f"[stat] depth={len(state['buf'])} pub={state['published']} "
                     f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
                     f"errs={state['parse_errors']} cmd_relayed={state['cmd_relayed']} "
-                    f"connected={state['connected']}")
+                    f"ack_pub={state['ack_published']} connected={state['connected']}")
                 last_stat = now
     finally:
         # Cleanup in importance order, raisy work last: a print() into a dead pipe once

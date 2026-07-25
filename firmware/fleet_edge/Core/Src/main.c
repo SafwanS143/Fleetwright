@@ -75,7 +75,9 @@
 #define BME280_I2C_TIMEOUT  100U         /* ms */
 
 /* --- Sampling + telemetry (Chunks 7-8) -------------------------------------*/
-#define SAMPLE_PERIOD_MS       100U   /* fixed 10 Hz sampling cadence */
+#define SAMPLE_PERIOD_MS       100U   /* default sampling cadence (10 Hz); OTA-tunable at runtime */
+#define SAMPLE_HZ_MIN          1U     /* accepted set_rate bounds -> period 20..1000 ms */
+#define SAMPLE_HZ_MAX          50U
 #define HEARTBEAT_LED_MS       500U   /* LD2 blink half-period, independent of sampling */
 #define HEARTBEAT_MSG_MS       5000U  /* "I'm alive" telemetry line interval (liveness) */
 #define TELEMETRY_UART_TIMEOUT 100U   /* ms to push one JSON line over UART */
@@ -112,11 +114,13 @@ volatile float temp_c;      /* degrees Celsius */
 volatile float pressure_hpa;/* hectopascals (== mbar) */
 volatile float humidity_pct;/* %RH */
 
-/* Downlink proof-of-reception. Watch these in Live Expressions to confirm a command
-   reached USART2 RX; the firmware acts on the command in a later step. */
-volatile uint32_t cmd_rx_bytes;  /* total downlink bytes seen at RX */
-volatile uint32_t cmd_rx_lines;  /* complete '\n'-terminated commands seen */
-char cmd_last[80];               /* last complete command line, for inspection */
+/* OTA downlink command state. The RX ISR assembles a line and hands it to the main loop via
+   cmd_pending; the loop parses, applies, and acks (parsing stays out of interrupt context). */
+volatile uint32_t cmd_rx_lines;   /* complete commands received */
+volatile uint32_t cmd_applied;    /* commands parsed + applied */
+volatile uint8_t  cmd_pending;    /* 1 = cmd_line holds a line awaiting the main loop */
+char cmd_line[96];                /* ISR -> main handoff: the pending command line */
+volatile uint32_t sample_period_ms = SAMPLE_PERIOD_MS;  /* live sample/telemetry period, set by set_rate */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -125,12 +129,15 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-void Cmd_RxByte(uint8_t b);   /* called from USART2_IRQHandler on each RX byte */
+void Cmd_RxByte(uint8_t b);          /* USART2 ISR -> assemble one downlink line */
+static void Cmd_Apply(const char *line);  /* main loop -> parse + apply + ack */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #include <stdio.h>   /* snprintf */
+#include <string.h>  /* strstr, strlen, memcpy */
+#include <stdlib.h>  /* strtol */
 
 /* Recover a wedged I2C bus. After a WARM reset (debugger restart / reset button)
    the STM32 restarts but the sensors do not; one left mid-transfer can keep
@@ -421,6 +428,17 @@ int main(void)
        due. The (uint32_t) subtraction is wrap-around safe. */
     uint32_t now = HAL_GetTick();
 
+    /* Apply any downlink command the RX ISR handed over. Done here, not in the ISR,
+       so parsing and the blocking ack TX never run in interrupt context. */
+    if (cmd_pending)
+    {
+      uint32_t prev_period = sample_period_ms;
+      Cmd_Apply(cmd_line);
+      cmd_pending = 0;                  /* release the buffer back to the ISR */
+      if (sample_period_ms != prev_period)
+        last_sample = now;             /* re-anchor so a rate change can't burst catch-up */
+    }
+
     /* Heartbeat LED - a separate cadence so a stalled sensor read never freezes
        the "I'm alive" signal. */
     if ((uint32_t)(now - last_led) >= HEARTBEAT_LED_MS)
@@ -437,12 +455,12 @@ int main(void)
       Heartbeat_Emit();
     }
 
-    /* Fixed-rate sampling at SAMPLE_PERIOD_MS (10 Hz). Advancing last_sample by
-       exactly one period (not "= now") keeps the average rate locked to the
-       tick, so it doesn't drift with body execution time. */
-    if ((uint32_t)(now - last_sample) >= SAMPLE_PERIOD_MS)
+    /* Sampling at sample_period_ms (10 Hz default, live-tunable by set_rate). Advancing
+       last_sample by exactly one period (not "= now") keeps the average rate locked to
+       the tick, so it doesn't drift with body execution time. */
+    if ((uint32_t)(now - last_sample) >= sample_period_ms)
     {
-      last_sample += SAMPLE_PERIOD_MS;
+      last_sample += sample_period_ms;
 
       /* Sample the IMU: one 14-byte burst from ACCEL_XOUT_H (the MPU auto-
          increments its register pointer), split each high/low pair into a
@@ -644,24 +662,99 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/* Accumulate a downlink command line and record it once its newline lands. Called from
-   the USART2 ISR, so it stays short; the full parse/apply comes in a later step. */
+/* Minimal JSON scanning. The gateway re-frames every downlink as compact NDJSON (no spaces),
+   so exact-substring matching is enough - no JSON parser pulled onto the MCU. */
+static int json_str_is(const char *s, const char *key, const char *val)
+{
+  char pat[40];
+  snprintf(pat, sizeof pat, "\"%s\":\"%s\"", key, val);
+  return strstr(s, pat) != NULL;
+}
+
+static long json_int(const char *s, const char *key, long dflt)
+{
+  char pat[24];
+  snprintf(pat, sizeof pat, "\"%s\":", key);
+  const char *p = strstr(s, pat);
+  if (p == NULL)
+    return dflt;
+  p += strlen(pat);
+  char *end;
+  long v = strtol(p, &end, 10);
+  return (end == p) ? dflt : v;
+}
+
+/* Ack a command back up the same UART/telemetry path so the control loop is observable.
+   Shares the monotonic seq, so a dropped ack still shows up as a gap downstream. */
+static void Ack_Emit(const char *cmd, int ok, long hz)
+{
+  char line[TELEMETRY_LINE_MAX];
+  int len = snprintf(line, sizeof line,
+      "{\"id\":\"%s\",\"type\":\"ack\",\"seq\":%lu,\"ts\":%lu,"
+      "\"cmd\":\"%s\",\"ok\":%s,\"hz\":%ld}\r\n",
+      DEVICE_ID, (unsigned long)seq, (unsigned long)HAL_GetTick(),
+      cmd, ok ? "true" : "false", hz);
+  if (len > 0)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)len, TELEMETRY_UART_TIMEOUT);
+    seq++;
+  }
+}
+
+/* Parse one downlink command, apply it, and ack. Runs in the main loop, so the blocking
+   ack TX is safe here. set_rate is idempotent: re-applying the same rate lands the same
+   period, so a re-sent command (e.g. a retrying controller) is harmless. */
+static void Cmd_Apply(const char *line)
+{
+  if (json_str_is(line, "cmd", "set_rate"))
+  {
+    long hz = json_int(line, "hz", 0);
+    if (hz >= SAMPLE_HZ_MIN && hz <= SAMPLE_HZ_MAX)
+    {
+      sample_period_ms = 1000UL / (uint32_t)hz;
+      cmd_applied++;
+      Ack_Emit("set_rate", 1, hz);
+    }
+    else
+    {
+      Ack_Emit("set_rate", 0, hz);          /* out of range: rejected, still acked */
+    }
+  }
+  else if (json_str_is(line, "cmd", "reboot"))
+  {
+    Ack_Emit("reboot", 1, 0);               /* blocking TX flushes before the reset */
+    NVIC_SystemReset();
+  }
+  else
+  {
+    Ack_Emit("unknown", 0, 0);
+  }
+}
+
+/* Assemble a downlink line in the ISR and hand a complete one to the main loop via
+   cmd_pending. A private buffer accumulates; cmd_line is written only once the main loop
+   has consumed the previous command, so ISR and loop never touch the same bytes (no lock). */
 void Cmd_RxByte(uint8_t b)
 {
+  static char asm_buf[96];
   static uint16_t idx;
-  cmd_rx_bytes++;
   if (b == '\n' || b == '\r')
   {
     if (idx > 0)
     {
-      cmd_last[idx] = '\0';
-      cmd_rx_lines++;
+      asm_buf[idx] = '\0';
+      if (!cmd_pending)
+      {
+        memcpy(cmd_line, asm_buf, (size_t)idx + 1);
+        cmd_rx_lines++;
+        cmd_pending = 1;
+      }
       idx = 0;
     }
     return;
   }
-  if (idx < sizeof cmd_last - 1)
-    cmd_last[idx++] = (char)b;
+  if (idx < sizeof asm_buf - 1)
+    asm_buf[idx++] = (char)b;
 }
 /* USER CODE END 4 */
 
