@@ -610,12 +610,22 @@ troubleshooting walk. Everything else here is a demo; that one is the interview.
 
 - The **full control loop**: command published → gateway relays → firmware applies → ack travels back up
   the telemetry path. Name each hop and what proves it happened.
+  - Observe: Watches the prometheus paths and scrapes for our SLOs (same as our alerting metrics)
+  - Diff: Compare with our predetermined healthy state
+  - Act: This is split up into multiple stages now;
+    - Decide: If deemed a problem, then send a reboot command thru the cmd channel
+    - Apply: The Pi receives the message and forwards it via UART
+    - Confirm: The UART sends an ack to the Pi to the cloud over MQTT ack channel
 
 - Why **acks** matter — without one you have fire-and-forget, not a control loop; you can't tell "applied"
   from "lost."
 
+  You need to be able to tell if your actions were actually applied. Fire and forget works for a telemetry at 10Hz, but it doesn't work for rebooting a device. The ack should also have the status of the request, such as success/reject/failure
+
 - Why **idempotency** matters — re-applying the same command must be safe, because at QoS 1 a command can
   arrive twice and a retry after a lost ack is indistinguishable from a first delivery.
+
+  If requests are idempotent, then retries can be applied. QoS 1 retries on not receiving a byte back from the subscriber, so idempotency removes the chance of further issues. When designing endpoints, its always best to make everything idempotent.
 
 ## Chunk 32 — Control surface
 
