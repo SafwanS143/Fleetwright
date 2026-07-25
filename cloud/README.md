@@ -125,26 +125,39 @@ Part of the always-on control plane (not the `sim` profile) — idle when the fl
 good controller. `FLEET_HEAL_SERVICES=false` turns off container restarts (and the Docker-socket mount)
 if you only want device remediation.
 
-## Control surface
+## Mission Control (control surface)
 
-The [`control/`](control/) service is the **human-driven** end of the same cloud→device downlink the
-remediator uses. A served web panel — **http://localhost:9099** — lists each device and, on one click,
-publishes an OTA command on `fleet/<id>/cmd`, then shows the round trip land: the device's **ack** on
-`fleet/<id>/ack` and the **live telemetry rate**. Push a real Nucleo from 10→50 Hz and the rate meter
-jumps while the ack confirms it applied — one action, a visible behaviour change, its confirmation.
+The [`control/`](control/) service is the **operator cockpit** — one live screen at
+**http://localhost:9099** — and the **human-driven** end of the same cloud→device downlink the
+remediator uses. It merges three views the rest of the stack already produces and streams them to the
+browser over **Server-Sent Events** at ~10 Hz:
 
-- **Ack round-trip time is measured here** (publish → ack), so it spans the whole path: broker, gateway,
-  UART, firmware, and back. An ack is what makes this a control loop rather than fire-and-forget — you
-  can tell *applied* from *lost*. Commands are idempotent (`set_rate` lands the same period every time),
-  so a QoS-1 duplicate is harmless.
-- `set_rate` and `reboot` acks come from the **real device** firmware; simulators show status + rate but
-  don't ack `set_rate`. Command counts and ack latency export on `/metrics` (scraped as `fleet-control`).
+- **Live per-device charts** — accel and gyro magnitude straight off MQTT, with the z-score/MAD normal
+  band shaded. Twist the IMU and the gyro trace spikes out of its band in real time.
+- **Anomaly pills + event feed** — pulled from Prometheus (`fleet_anomaly_*`), the incident store
+  (`/incidents`), and the remediator (`/state`). A physical fault narrates itself down the feed:
+  *anomaly detected → device degraded → incident opened → remediator reboots → resolved → green.*
+- **Command controls** — `set_rate` / `reboot` on one click, publishing `fleet/<id>/cmd` and showing the
+  **ack** land with its **round-trip time**.
+
+This is the stage the physical-fault demo runs on: twist the sensor, watch the cockpit react end to end,
+then let the remediator auto-heal *or* hit **reboot** yourself. `set_rate` is the quick proof the
+downlink is a real bidirectional channel — a config change you can watch on the rate meter.
+
+- **Ack RTT is measured here** (publish → ack), so it spans the whole path: broker, gateway, UART,
+  firmware, and back. An ack is what makes this a control loop rather than fire-and-forget — you can tell
+  *applied* from *lost*. Commands are idempotent (`set_rate` lands the same period every time), so a
+  QoS-1 duplicate is harmless.
+- `set_rate` / `reboot` acks come from the **real device** firmware; simulators show status + charts but
+  don't ack `set_rate`. Every derived-state source is best-effort — the cockpit degrades to what it has
+  if one is down, and never blocks the live MQTT path. Command counts and ack latency export on
+  `/metrics` (scraped as `fleet-control`).
 
 ```bash
-# From the panel, or by curl:
+# From the cockpit, or by curl:
 curl -X POST "localhost:9099/cmd?device=fleet-edge-01&cmd=set_rate&hz=25"
 curl -X POST "localhost:9099/cmd?device=fleet-edge-01&cmd=reboot"
-curl "localhost:9099/state"    # per-device status, observed Hz, last ack + rtt
+curl "localhost:9099/state"    # full snapshot: status, Hz, telemetry, anomaly, incidents, remediation
 ```
 
 ## Anomaly detection

@@ -126,8 +126,12 @@ services:
       FLEET_BROKER_PORT: "1883"
       FLEET_CONTROL_PORT: "9099"
       FLEET_DEVICE_ID: fleet-edge-01   # always shown, so the panel isn't empty before the Pi publishes
+      # Derived-state sources for the cockpit; each is best-effort — the panel degrades if one is down.
+      FLEET_PROM_URL: http://prometheus:9090
+      FLEET_INCIDENTS_URL: http://incidents:9096
+      FLEET_REMEDIATOR_URL: http://remediator:9098
     ports:
-      - "9099:9099"   # control panel + /state + /cmd + /metrics
+      - "9099:9099"   # Mission Control cockpit + /stream (SSE) + /cmd + /state + /metrics
     depends_on:
       - mosquitto
 
