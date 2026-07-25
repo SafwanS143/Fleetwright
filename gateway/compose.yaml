@@ -5,8 +5,8 @@ services:
     container_name: fleet-gateway
     restart: unless-stopped
 
-    # Pure MQTT client, binds no ports. Bridge networking would put 127.0.0.1
-    # in its own netns and refuse the connect to the host's Mosquitto.
+    # Pure MQTT client, binds no ports. Host networking so the container reaches the
+    # broker over the Pi's real LAN IP (the cloud stack runs on the laptop, not here).
     network_mode: host
 
     # Must exceed the finally block's 2s wait_for_publish, or docker SIGKILLs
@@ -25,7 +25,8 @@ services:
 
     environment:
       FLEET_SERIAL_PORT: /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF515086874967243256-if02
-      FLEET_MQTT_HOST: "127.0.0.1"
+      # Broker lives on the laptop now -- set LAPTOP_IP to its LAN address (e.g. 192.168.x.y).
+      FLEET_MQTT_HOST: "${LAPTOP_IP:?set LAPTOP_IP to the laptop's LAN IP running Mosquitto}"
       FLEET_MQTT_PORT: "1883"
       FLEET_DEVICE_ID: fleet-edge-01
       FLEET_BUFFER_MAXLEN: "6000"

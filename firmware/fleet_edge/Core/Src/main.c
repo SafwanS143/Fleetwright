@@ -111,6 +111,12 @@ BME280_t bme280;
 volatile float temp_c;      /* degrees Celsius */
 volatile float pressure_hpa;/* hectopascals (== mbar) */
 volatile float humidity_pct;/* %RH */
+
+/* Downlink proof-of-reception. Watch these in Live Expressions to confirm a command
+   reached USART2 RX; the firmware acts on the command in a later step. */
+volatile uint32_t cmd_rx_bytes;  /* total downlink bytes seen at RX */
+volatile uint32_t cmd_rx_lines;  /* complete '\n'-terminated commands seen */
+char cmd_last[80];               /* last complete command line, for inspection */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,7 +125,7 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Cmd_RxByte(uint8_t b);   /* called from USART2_IRQHandler on each RX byte */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -394,6 +400,12 @@ int main(void)
   {
     Error_Handler();
   }
+
+  /* Raise the USART2 RXNE interrupt for the downlink. A bare RXNE handler (not HAL's
+     IT-receive) so it never contends the handle lock with the polling telemetry TX. */
+  __HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
+  HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(USART2_IRQn);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -632,7 +644,25 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+/* Accumulate a downlink command line and record it once its newline lands. Called from
+   the USART2 ISR, so it stays short; the full parse/apply comes in a later step. */
+void Cmd_RxByte(uint8_t b)
+{
+  static uint16_t idx;
+  cmd_rx_bytes++;
+  if (b == '\n' || b == '\r')
+  {
+    if (idx > 0)
+    {
+      cmd_last[idx] = '\0';
+      cmd_rx_lines++;
+      idx = 0;
+    }
+    return;
+  }
+  if (idx < sizeof cmd_last - 1)
+    cmd_last[idx++] = (char)b;
+}
 /* USER CODE END 4 */
 
 /**

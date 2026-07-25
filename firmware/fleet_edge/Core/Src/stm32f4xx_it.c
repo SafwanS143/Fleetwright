@@ -57,7 +57,8 @@
 /* External variables --------------------------------------------------------*/
 
 /* USER CODE BEGIN EV */
-
+extern UART_HandleTypeDef huart2;
+void Cmd_RxByte(uint8_t b);
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -199,5 +200,14 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
-
+/* Downlink RX. Bare RXNE handler (not HAL_UART_IRQHandler) so it never touches the UART
+   handle lock the polling telemetry TX holds. Reading SR then DR clears RXNE and ORE. */
+void USART2_IRQHandler(void)
+{
+  if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_RXNE))
+  {
+    (void)huart2.Instance->SR;
+    Cmd_RxByte((uint8_t)(huart2.Instance->DR & 0xFF));
+  }
+}
 /* USER CODE END 1 */

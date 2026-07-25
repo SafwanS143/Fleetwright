@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-gateway/serial_reader.py  --  Chunk 14 (containerized gateway)
+gateway/serial_reader.py  --  containerized connectivity gateway
 
 Reads NDJSON telemetry from the Nucleo over serial, buffers to newline, parses each
 line as JSON, and publishes to Mosquitto. Publishes a retained connection-state
 message on connect and registers a Last-Will so an ungraceful death marks us offline.
+Also subscribes to the downlink command topic and relays each command down the UART.
 
 Run on the Pi:  docker compose up -d   (or python3 gateway/serial_reader.py)
 """
@@ -55,6 +56,7 @@ DEVICE_ID = os.environ.get("FLEET_DEVICE_ID", "fleet-edge-01")
 TOPIC_TELEMETRY = f"fleet/{DEVICE_ID}/telemetry"
 TOPIC_HEARTBEAT = f"fleet/{DEVICE_ID}/heartbeat"
 TOPIC_STATUS    = f"fleet/{DEVICE_ID}/status"   # retained connection state ONLY
+TOPIC_CMD       = f"fleet/{DEVICE_ID}/cmd"      # downlink: cloud -> device commands (OTA)
 
 # 30s => broker declares us dead after ~45s (1.5x keepalive). That's the MTTD floor for
 # gateway death: nothing downstream knows sooner. Chosen against the availability SLO.
@@ -76,6 +78,10 @@ BUFFER_MAXLEN = int(os.environ.get("FLEET_BUFFER_MAXLEN", "6000"))
 # Cap frames/pass so a flush never starves ser.read() (which would overrun the kernel's
 # serial buffer -- losing live data to save dead data). ~450 msg/s drain vs 10 msg/s ingest.
 DRAIN_BATCH = int(os.environ.get("FLEET_DRAIN_BATCH", "50"))
+
+# Downlink commands are rare and small; a deep queue only matters if the Nucleo link is
+# down while commands arrive. Bounded so a wedged link can't grow it without limit.
+CMD_MAXLEN = int(os.environ.get("FLEET_CMD_MAXLEN", "100"))
 
 STAT_INTERVAL = 10.0           # seconds between [stat] lines
 
@@ -111,6 +117,10 @@ def on_connect(client, userdata, connect_flags, reason_code, properties):
     # QoS 1 + retain: state must arrive, and must be there for late subscribers.
     client.publish(TOPIC_STATUS, STATUS_ONLINE, qos=1, retain=True)
     log(f"[mqtt] {TOPIC_STATUS} online (retained)")
+    # Resubscribe every (re)connect -- a session lost on a blip drops subscriptions.
+    # QoS 1: a downlink command must not be silently dropped by the broker.
+    client.subscribe(TOPIC_CMD, qos=1)
+    log(f"[mqtt] subscribed {TOPIC_CMD}")
 
 
 def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
@@ -120,12 +130,33 @@ def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
     log(f"[mqtt] disconnected ({reason_code}); buffering telemetry")
 
 
+def on_command(client, userdata, message):
+    """Downlink relay. Runs on paho's thread, so it only validates + enqueues; the
+    serial-owning main loop does the write, keeping one writer that survives replug.
+    Non-JSON is dropped here so garbage never reaches the Nucleo's UART."""
+    try:
+        cmd = json.loads(message.payload)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        userdata["cmd_errors"] += 1
+        log(f"[cmd] dropping non-JSON downlink: {message.payload!r}")
+        return
+    # Re-frame compact + newline-terminated to match the uplink's NDJSON framing.
+    line = (json.dumps(cmd, separators=(",", ":")) + "\n").encode()
+    q = userdata["cmd_out"]
+    if len(q) == q.maxlen:
+        userdata["cmd_dropped"] += 1
+        log(f"[cmd] queue FULL -- evicted oldest ({userdata['cmd_dropped']} total)")
+    q.append(line)
+    log(f"[cmd] queued downlink: {line!r}")
+
+
 def make_mqtt_client(state: dict) -> mqtt.Client:
     """Build the client. loop_start() runs paho I/O on its own thread so the serial read
     loop keeps control. `state` is passed as userdata so callbacks share link state."""
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata=state)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
+    client.on_message = on_command
 
     # Will ships inside CONNECT, so register before connecting. Retained so a subscriber
     # arriving after our death isn't served the stale 'online'.
@@ -184,6 +215,31 @@ def drain(client: mqtt.Client, state: dict) -> int:
     return sent
 
 
+def reconnect_serial(ser: serial.Serial, buf: bytearray, why: str) -> serial.Serial:
+    """Close the dead port, abandon the half-received line, and block until it reopens.
+    Shared by the read and write paths so both recover a replug the same way."""
+    log(f"[serial] {why}; reconnecting")
+    try:
+        ser.close()
+    except Exception:
+        pass
+    buf.clear()
+    return open_serial()
+
+
+def relay_commands(ser: serial.Serial, state: dict):
+    """The only writer to the serial port. Runs in the main loop so it never races the
+    reader or a replug reconnect. Pops only after ser.write() returns, so a write error
+    (OSError) leaves the command at the head to retry -- same at-head semantics as drain."""
+    q = state["cmd_out"]
+    while q:
+        line = q[0]
+        ser.write(line)          # OSError here -> caught by the loop's serial handler
+        q.popleft()
+        state["cmd_relayed"] += 1
+        log(f"[cmd] relayed to UART: {line!r}")
+
+
 def publish_heartbeat(client: mqtt.Client, state: dict, payload: str):
     """Heartbeats are never buffered: freshness is `now - last_received`, so replaying a
     stale heartbeat after an outage would fake availability. QoS 0 (not 1) for the same
@@ -223,6 +279,10 @@ def main():
         "hb_dropped": 0,     # heartbeats destroyed while disconnected (by design, not a bug)
         "published": 0,
         "parse_errors": 0,
+        "cmd_out": deque(maxlen=CMD_MAXLEN),  # downlink commands awaiting the UART write
+        "cmd_relayed": 0,    # commands written down to the Nucleo
+        "cmd_dropped": 0,    # commands evicted by a full downlink queue
+        "cmd_errors": 0,     # non-JSON downlinks refused before the UART
     }
 
     ser = open_serial()
@@ -235,13 +295,7 @@ def main():
             try:
                 chunk = ser.read(256)     # up to 256 bytes, or fewer after timeout
             except OSError as e:          # serial.SerialException subclasses OSError
-                log(f"[serial] lost device ({e}); reconnecting")
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-                buf.clear()               # abandon the half-received line
-                ser = open_serial()
+                ser = reconnect_serial(ser, buf, f"lost device ({e})")
                 continue
 
             if chunk:
@@ -256,11 +310,20 @@ def main():
             # when the Nucleo goes quiet. No-ops when the queue is empty or link is down.
             drain(client, state)
 
+            # Relay any queued downlink commands to the Nucleo. A write to a dead port
+            # raises OSError -> same reconnect path as a failed read.
+            try:
+                relay_commands(ser, state)
+            except OSError as e:
+                ser = reconnect_serial(ser, buf, f"write failed ({e})")
+                continue
+
             now = time.monotonic()
             if now - last_stat >= STAT_INTERVAL:
                 log(f"[stat] depth={len(state['buf'])} pub={state['published']} "
                     f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
-                    f"errs={state['parse_errors']} connected={state['connected']}")
+                    f"errs={state['parse_errors']} cmd_relayed={state['cmd_relayed']} "
+                    f"connected={state['connected']}")
                 last_stat = now
     finally:
         # Cleanup in importance order, raisy work last: a print() into a dead pipe once
@@ -289,7 +352,8 @@ def main():
             log(f"[buffer] {len(state['buf'])} frames lost on exit (memory-only)")
         log(f"[mqtt] disconnected -- pub={state['published']} "
             f"dropped={state['dropped']} hb_dropped={state['hb_dropped']} "
-            f"errs={state['parse_errors']}")
+            f"errs={state['parse_errors']} cmd_relayed={state['cmd_relayed']} "
+            f"cmd_dropped={state['cmd_dropped']} cmd_errors={state['cmd_errors']}")
 
 
 if __name__ == "__main__":
