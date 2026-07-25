@@ -34,6 +34,23 @@ SIGMA = float(os.environ.get("FLEET_ZSCORE_SIGMA", "3.5"))            # z-score 
 CONTAMINATION = float(os.environ.get("FLEET_IF_CONTAMINATION", "0.01"))
 N_ESTIMATORS = int(os.environ.get("FLEET_IF_ESTIMATORS", "100"))
 
+# Per-channel noise floor on the z-score spread, in the channel's own units. A near-constant real
+# signal (a still BME280) drives MAD toward zero; without a physical floor the band is a sliver and
+# normal jitter/self-heating drift trips a false anomaly. Override per channel via env.
+# Floors sit at roughly each sensor's own datasheet accuracy: below that a "change" isn't physically
+# resolvable, so it can't be a real anomaly worth paging on.
+_MIN_STD_DEFAULTS = {
+    "temperature": 0.25,      # °C   (~BME280 typ temp accuracy)
+    "humidity": 0.8,          # %RH  (~BME280 humidity accuracy ±3%)
+    "pressure": 0.16,         # hPa  (~4-5x relative-pressure noise)
+    "accel_magnitude": 0.02,  # g
+}
+
+
+def _min_std(channel: str) -> float:
+    default = _MIN_STD_DEFAULTS.get(channel, 0.0)
+    return float(os.environ.get(f"FLEET_MIN_STD_{channel.upper()}", default))
+
 # Chunk 21 decision: the z-score/MAD baseline enters the alerting path (0.000 FP vs IF's 5.6% on a 10 Hz
 # stream — the deciding axis; see evaluate.py and docs/detector-evaluation.md). Both scores stay exported
 # for the dashboard; Chunk 22 wires *this* detector's flag to paging.
@@ -92,7 +109,7 @@ def _get(device: str, channel: str) -> ChannelDetectors:
     det = _detectors.get(key)
     if det is None:
         det = ChannelDetectors(
-            baseline=BASELINE, sigma=SIGMA,
+            baseline=BASELINE, sigma=SIGMA, min_std=_min_std(channel),
             contamination=CONTAMINATION, n_estimators=N_ESTIMATORS,
         )
         _detectors[key] = det

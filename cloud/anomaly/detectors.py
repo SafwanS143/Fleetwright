@@ -38,21 +38,21 @@ class ZScoreDetector:
     is (distance in robust-sigma) / sigma and 1.0 is the trip line.
     """
 
-    def __init__(self, sigma: float = 3.5):
+    def __init__(self, sigma: float = 3.5, min_std: float = _EPS):
         self.sigma = sigma
+        # Physical noise floor for this channel's spread. On a near-constant signal MAD collapses to a
+        # few LSB, so without this the band is a sliver and normal jitter/drift reads as a huge anomaly.
+        self.min_std = max(min_std, _EPS)
         self.median = 0.0
-        self.robust_std = _EPS
+        self.robust_std = self.min_std
         self.fitted = False
 
     def fit(self, samples: np.ndarray) -> None:
         self.median = float(np.median(samples))
         mad = float(np.median(np.abs(samples - self.median)))
         rstd = MAD_TO_STD * mad
-        if rstd < _EPS:
-            # Degenerate (near-constant) warm-up window: fall back to ordinary std, then a hard floor,
-            # so a dead-flat baseline can't make every later sample look infinitely anomalous.
-            rstd = float(np.std(samples))
-        self.robust_std = max(rstd, _EPS)
+        # Floor the spread at the channel's real noise level, not a mathematical epsilon.
+        self.robust_std = max(rstd, self.min_std)
         self.fitted = True
 
     def ratio(self, x: float) -> float:
@@ -123,11 +123,11 @@ class ChannelDetectors:
     legitimate regime change should or shouldn't re-baseline is part of the Chunk 21 limitations story).
     """
 
-    def __init__(self, baseline: int = 300, sigma: float = 3.5,
+    def __init__(self, baseline: int = 300, sigma: float = 3.5, min_std: float = _EPS,
                  contamination: float = 0.01, n_estimators: int = 100):
         self.baseline = baseline
         self._warmup: list[float] = []
-        self.zscore = ZScoreDetector(sigma=sigma)
+        self.zscore = ZScoreDetector(sigma=sigma, min_std=min_std)
         self.iforest = IsolationForestDetector(contamination=contamination, n_estimators=n_estimators)
 
     @property
