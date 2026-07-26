@@ -643,6 +643,12 @@ troubleshooting walk. Everything else here is a demo; that one is the interview.
 - **Narrate the whole chain as it happens**: physical fault → metric moves → anomaly trips → device flips
   degraded → incident opens → alert fires (severity + routing) → remediation acts → recovery → back to
   green. Be able to say what you'd expect _next_ before it appears on screen.
+  - Move the IMU
+  - Prometheus scrapes endpoints
+  - Anomaly trips (z-score)
+  - Alerts are fired, incident is open
+  - Reboots, and after cooldown incident is marked resolved
+  - Grafana goes back to normal
 
 ## Chunk 34 — Record the video
 
