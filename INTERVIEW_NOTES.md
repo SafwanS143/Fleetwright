@@ -666,4 +666,103 @@ _No defend questions — this chunk is a deliverable, not an argument. The narra
 - Which hops fail **silently** (no error, just absence) versus loudly, and why freshness is the one signal
   that catches all of them.
 
-<!-- Phase 7 stubs added as you reach them. -->
+# Phase 7 — Platform layer
+
+_The Infrastructure-Engineering alignment, and the one layer that's explicitly self-taught — say so out
+loud: "I stood it up on Compose, got the pipeline working end to end, then migrated to k3s to learn the
+platform layer." Nothing here goes on the resume before it exists. Interview weight sits on the
+declarative model (Chunk 36) — the same observe → diff → act loop as Chunk 28, except someone else's
+controller runs it — and on the CI/CD vocabulary in Chunk 41, which these interviews test almost word
+for word._
+
+**Tier 1 — Interview-critical, full depth:**
+
+1. The **declarative desired-state model** and how k8s self-heals to it — Chunk 36.
+2. **Readiness vs liveness**, tied back to the health-check/auto-restart logic in Chunk 28 — Chunk 37.
+3. What **Helm templating and releases** give you over raw manifests — Chunk 38.
+4. What problem **GitOps** solves, and what **drift** is — Chunk 39.
+5. What Terraform **state** is and why it matters; idempotency; IaC over click-ops — Chunk 40.
+6. **CI vs continuous delivery vs continuous deployment**, kept precise — Chunk 41.
+
+## Chunk 36 — Compose → k3s
+
+**Interview-critical tier:**
+
+- The **declarative desired-state model** and how k8s self-heals to it: what you declare, what
+  reconciles it, and what became of `restart:` and `depends_on` in the migration. Include the honest
+  limit — what k8s _can't_ see until Chunk 37 adds probes.
+
+  Very similar to the self healing loop already made, you declare how many pods of a certain spec you need, and the restarting is taken care of in the reconciliation.
+
+  Services don't start in order of dependencies, they keep retrying on them, since this is more realistic.
+
+  The name of the pod changes, sinced it's hashed with the code version. This makes k8s know if there is a code diff, and it will roll out the pod with the new spec.
+
+  K8s only knows whether a pod is crashed or not. Finding out if it's working correctly needs probes to find out.
+
+**One-liner tier:**
+
+- What a **Deployment** gives you over `docker run`.
+
+A deployment gives you a declarative control loop of self healing, networking between pods, better version control, rollback, and more.
+
+- What the **control plane** does — API server, etcd, scheduler, controllers, and kubelet on the node.
+
+The control plane is essentially the reconciliation and managing. The API server is the only way to input controls to the etcd. The etcd sotres what the healthhy state is, and the scheduler routes pods onto nodes based on resources used. Controllers watch one resource type and try to make it go from current to wanted resources.
+
+On each node, kubelet tells the container runtime to run it's pods. It basically just makes it run what it needs to.
+
+- **k8s vs k3s**: what k3s actually is, and which bundled pieces this stack leans on.
+
+k3s is k8s but shrunk down into 70MB. It swaps etcd for sqlite, and other modifications to make it smaller, and it's used in IoT evironments like this one.
+
+- Why the **remediator dropped its Docker socket** (and root) on the way to k8s.
+
+It no longer needs to restart containers that are stale according to prometheus. Restarting containers needs the docker socket to be mounted to that container, which leads to that container having high permimssions. Dropping the socket and letting k3s take care of restarts using probes is the right choice.
+
+## Chunk 37 — Liveness + readiness probes
+
+**Interview-critical tier:**
+
+- **Readiness vs liveness** — what each one causes the kubelet to do, and why conflating them is the
+  classic outage (a liveness probe on a dependency restarts a healthy pod forever). Tie it straight to
+  the health-check / auto-restart logic in Chunk 28: what the probes replace, and what they do better.
+
+## Chunk 38 — Helm
+
+**Interview-critical tier:**
+
+- What **Helm templating and releases** give you over raw manifests — one chart, many environments;
+  a release as a versioned, rollback-able unit.
+
+## Chunk 39 — ArgoCD (GitOps)
+
+**Interview-critical tier:**
+
+- What problem **GitOps** solves (git as the single source of truth), why that beats imperative
+  `kubectl apply` by hand, and what **drift** is — how it happens and how reconciliation catches it.
+
+## Chunk 40 — Modular Terraform
+
+**Interview-critical tier:**
+
+- What Terraform **state** is and why it matters (and what goes wrong when two people share one).
+
+- **Idempotency**, and why IaC beats click-ops.
+
+**One-liner tier:**
+
+- What `plan` shows you before `apply`.
+
+- **Modules** and **providers**.
+
+## Chunk 41 — Multi-stage CI/CD
+
+**Interview-critical tier:**
+
+- **Continuous integration vs continuous delivery vs continuous deployment** — precisely; the
+  delivery/deployment line is exactly where interviewers push.
+
+**One-liner tier:**
+
+- What a **deploy gate** is, and why you'd want a manual one.
