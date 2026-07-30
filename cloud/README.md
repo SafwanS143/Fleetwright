@@ -12,8 +12,8 @@ Cloud-side observability and reliability stack.
 - **Incident store** — SQLite, open-on-trip / close-on-recovery, with a Grafana timeline.
 - **Self-healing** — observe → diff → act remediation loop.
 
-Stood up first on **Docker Compose**, then migrated to **k3s** (Deployments/Services, liveness/
-readiness probes), packaged with **Helm**, and synced via **ArgoCD** (GitOps).
+Stood up first on **Docker Compose** to get the pipeline working end to end, then migrated to **k3s**
+as Deployments + Services (see [`k8s/`](k8s/)). Helm packaging and ArgoCD sync come after.
 
 ## Running the stack
 
@@ -58,6 +58,21 @@ standalone: `python simulator/fleet_simulator.py --devices 5`.
 Layout: [`docker-compose.yml`](docker-compose.yml), [`mosquitto/`](mosquitto/),
 [`prometheus/`](prometheus/), [`grafana/provisioning`](grafana/provisioning) (datasource + dashboard
 provider), [`grafana/dashboards`](grafana/dashboards) (all four boards, provisioned from git).
+
+## Running on k3s
+
+The same stack as Deployments + Services, on the same host ports — full instructions in
+[`k8s/README.md`](k8s/README.md).
+
+```bash
+bash k8s/build-images.sh              # build the local images, import them into the cluster
+kubectl apply -k .                    # from cloud/
+kubectl apply -n fleet -f k8s/simulator.yaml    # the fake fleet, like the `sim` profile
+```
+
+Both paths read the **same** `prometheus.yml`, SLO rules, and dashboards: Compose bind-mounts them,
+[`kustomization.yaml`](kustomization.yaml) generates ConfigMaps from them. Nothing is duplicated, so
+the two can't drift.
 
 ## Fleet overview dashboard
 

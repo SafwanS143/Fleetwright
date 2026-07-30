@@ -1,0 +1,48 @@
+# Simulated device fleet. Kept out of the default kustomization the same way it sat behind Compose's
+# `sim` profile, so a default apply never competes with a real Pi on the same broker.
+#   kubectl apply -n fleet -f k8s/simulator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simulator
+  template:
+    metadata:
+      labels:
+        app: simulator
+    spec:
+      containers:
+        - name: simulator
+          image: fleetwright/simulator:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FLEET_BROKER_HOST
+              value: mosquitto
+            - name: FLEET_BROKER_PORT
+              value: "1883"
+            - name: FLEET_SIM_DEVICES
+              value: "5"
+          ports:
+            - name: http
+              containerPort: 9097
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+# Exposed for the fault-control page: /fault, /clear, /state.
+apiVersion: v1
+kind: Service
+metadata:
+  name: simulator
+spec:
+  type: LoadBalancer
+  selector:
+    app: simulator
+  ports:
+    - name: http
+      port: 9097
+      targetPort: http

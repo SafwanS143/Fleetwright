@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: control
+  template:
+    metadata:
+      labels:
+        app: control
+    spec:
+      containers:
+        - name: control
+          image: fleetwright/control:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FLEET_BROKER_HOST
+              value: mosquitto
+            - name: FLEET_BROKER_PORT
+              value: "1883"
+            - name: FLEET_CONTROL_PORT
+              value: "9099"
+            - name: FLEET_DEVICE_ID
+              value: fleet-edge-01   # always shown, so the panel isn't empty before the Pi publishes
+            # Derived-state sources for the cockpit; each is best-effort, so the panel degrades
+            # rather than fails if one is down.
+            - name: FLEET_PROM_URL
+              value: http://prometheus:9090
+            - name: FLEET_INCIDENTS_URL
+              value: http://incidents:9096
+            - name: FLEET_REMEDIATOR_URL
+              value: http://remediator:9098
+          ports:
+            - name: http
+              containerPort: 9099
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+# The operator-facing cockpit: /stream (SSE), /cmd, /state, /metrics.
+apiVersion: v1
+kind: Service
+metadata:
+  name: control
+spec:
+  type: LoadBalancer
+  selector:
+    app: control
+  ports:
+    - name: http
+      port: 9099
+      targetPort: http

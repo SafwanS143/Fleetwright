@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bridge
+  template:
+    metadata:
+      labels:
+        app: bridge
+    spec:
+      containers:
+        - name: bridge
+          image: fleetwright/bridge:dev
+          # Never pull: the image is built locally and imported into the cluster, not hosted in a registry.
+          imagePullPolicy: IfNotPresent
+          env:
+            # Resolved by cluster DNS to the mosquitto Service — same name the Compose network used.
+            - name: FLEET_BROKER_HOST
+              value: mosquitto
+            - name: FLEET_BROKER_PORT
+              value: "1883"
+            - name: FLEET_METRICS_PORT
+              value: "8000"
+          ports:
+            - name: metrics
+              containerPort: 8000
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+# ClusterIP: only Prometheus scrapes this, and it does so from inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bridge
+spec:
+  selector:
+    app: bridge
+  ports:
+    - name: metrics
+      port: 8000
+      targetPort: metrics

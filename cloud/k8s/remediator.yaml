@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remediator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: remediator
+  template:
+    metadata:
+      labels:
+        app: remediator
+    spec:
+      containers:
+        - name: remediator
+          image: fleetwright/remediator:dev
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # Under Compose this ran as root purely to reach the Docker socket. That socket is gone,
+            # so the loop drops to an unprivileged user and keeps only its device-remediation job.
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          env:
+            - name: FLEET_BROKER_HOST
+              value: mosquitto
+            - name: FLEET_BROKER_PORT
+              value: "1883"
+            - name: FLEET_PROM_URL
+              value: http://prometheus:9090
+            - name: FLEET_METRICS_PORT
+              value: "9098"
+            - name: FLEET_RECONCILE_INTERVAL
+              value: "15"
+            - name: FLEET_FRESHNESS_THRESHOLD
+              value: "20"   # act past a clear SLO breach, not the 10s edge
+            - name: FLEET_REMEDIATION_MAX_ATTEMPTS
+              value: "3"    # then stop and escalate to a human
+            # Off by design here: restarting a hung container is the kubelet's job now, driven by the
+            # liveness probe, not by this loop reaching a container runtime socket.
+            - name: FLEET_HEAL_SERVICES
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 9098
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+# Exposed for /state — what the control loop is currently working.
+apiVersion: v1
+kind: Service
+metadata:
+  name: remediator
+spec:
+  type: LoadBalancer
+  selector:
+    app: remediator
+  ports:
+    - name: http
+      port: 9098
+      targetPort: http

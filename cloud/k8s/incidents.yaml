@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: incidents-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incidents
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # one SQLite writer, one ReadWriteOnce claim
+  selector:
+    matchLabels:
+      app: incidents
+  template:
+    metadata:
+      labels:
+        app: incidents
+    spec:
+      securityContext:
+        # The image runs as uid 1000; fsGroup makes the mounted claim group-writable for it.
+        fsGroup: 1000
+      containers:
+        - name: incidents
+          image: fleetwright/incidents:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FLEET_INCIDENT_PORT
+              value: "9096"
+            - name: FLEET_INCIDENT_DB
+              value: /data/incidents.db
+            - name: FLEET_REOPEN_WINDOW
+              value: "300"     # re-fire within 5m of a resolve is the same episode
+            - name: FLEET_INCIDENT_EXPIRY
+              value: "18000"   # force-close after 5h silent, catching swallowed resolves
+          ports:
+            - name: http
+              containerPort: 9096
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: incidents-data
+---
+# Exposed on the host for /incidents (JSON rows + timelines), same as Compose.
+apiVersion: v1
+kind: Service
+metadata:
+  name: incidents
+spec:
+  type: LoadBalancer
+  selector:
+    app: incidents
+  ports:
+    - name: http
+      port: 9096
+      targetPort: http

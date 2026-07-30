@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: anomaly
+  template:
+    metadata:
+      labels:
+        app: anomaly
+    spec:
+      containers:
+        - name: anomaly
+          image: fleetwright/anomaly:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FLEET_BROKER_HOST
+              value: mosquitto
+            - name: FLEET_BROKER_PORT
+              value: "1883"
+            - name: FLEET_METRICS_PORT
+              value: "8001"
+            # Warm-up + detector knobs; ~300 samples is roughly 30s at 10 Hz before fitting.
+            - name: FLEET_ANOMALY_BASELINE
+              value: "300"
+            - name: FLEET_ZSCORE_SIGMA
+              value: "3.5"
+            - name: FLEET_IF_CONTAMINATION
+              value: "0.01"
+          ports:
+            - name: metrics
+              containerPort: 8001
+          resources:
+            # numpy/scikit-learn baselines make this the heaviest of the Python services.
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anomaly
+spec:
+  selector:
+    app: anomaly
+  ports:
+    - name: metrics
+      port: 8001
+      targetPort: metrics

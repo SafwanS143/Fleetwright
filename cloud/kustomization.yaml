@@ -1,0 +1,56 @@
+# Lives at the cloud root, not in k8s/, so ConfigMaps can be generated from the very same config files
+# Compose bind-mounts. One source of truth for prometheus.yml, the SLO rules, and the dashboards.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fleet
+
+resources:
+  - k8s/namespace.yaml
+  - k8s/mosquitto.yaml
+  - k8s/bridge.yaml
+  - k8s/anomaly.yaml
+  - k8s/prometheus.yaml
+  - k8s/alertmanager.yaml
+  - k8s/alert-sink.yaml
+  - k8s/incidents.yaml
+  - k8s/remediator.yaml
+  - k8s/control.yaml
+  - k8s/grafana.yaml
+  # k8s/simulator.yaml is deliberately excluded — apply it explicitly when you want the fake fleet.
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: fleetwright
+
+# Each generated ConfigMap gets a content hash in its name, so editing a config file produces a new
+# name and rolls the pods that mount it. Config changes deploy like code changes.
+configMapGenerator:
+  - name: mosquitto-config
+    files:
+      - mosquitto/mosquitto.conf
+  - name: prometheus-config
+    files:
+      - prometheus/prometheus.yml
+  - name: prometheus-rules
+    files:
+      - prometheus/rules/fleet_slos.yml
+  - name: alertmanager-config
+    files:
+      - alertmanager/alertmanager.yml
+  - name: alertmanager-templates
+    files:
+      - alertmanager/templates/slack.tmpl
+  - name: grafana-datasources
+    files:
+      - grafana/provisioning/datasources/datasource.yml
+  - name: grafana-dashboard-provider
+    files:
+      - grafana/provisioning/dashboards/provider.yml
+  - name: grafana-dashboards
+    files:
+      - grafana/dashboards/fleet-overview.json
+      - grafana/dashboards/fleet-device.json
+      - grafana/dashboards/fleet-anomaly.json
+      - grafana/dashboards/fleet-incidents.json
