@@ -727,6 +727,11 @@ It no longer needs to restart containers that are stale according to prometheus.
 - **Readiness vs liveness** — what each one causes the kubelet to do, and why conflating them is the
   classic outage (a liveness probe on a dependency restarts a healthy pod forever). Tie it straight to
   the health-check / auto-restart logic in Chunk 28: what the probes replace, and what they do better.
+  - Readiness: A probe that checks if the container is ready to be routed to, and makes sure that it is acting properly. If failed, the container won't be routed to (by the kubelet). It's easy to be rerouted and it doesn't kill any process.
+
+  - Liveness: A probe that checks if the container is alive or not. If it isn't then the kubelet will restart the container. This is more robust and generally should be a longer time period than the readiness probe.
+
+  These probes are a direct replacement for the self healing loop made before. They are per service and they don't rely on prometheus to send data first.
 
 ## Chunk 38 — Helm
 
