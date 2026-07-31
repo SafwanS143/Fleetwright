@@ -29,6 +29,16 @@ spec:
           ports:
             - name: http
               containerPort: 9097
+          # /state is served straight off the simulator's device table, so it proves the fault-control
+          # surface is actually usable rather than just that a socket is open.
+          readinessProbe:
+            httpGet: { path: /state, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /state, port: http }
+            periodSeconds: 15
+            failureThreshold: 4
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { memory: 256Mi }

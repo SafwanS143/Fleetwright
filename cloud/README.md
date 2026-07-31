@@ -15,6 +15,10 @@ Cloud-side observability and reliability stack.
 Stood up first on **Docker Compose** to get the pipeline working end to end, then migrated to **k3s**
 as Deployments + Services (see [`k8s/`](k8s/)). Helm packaging and ArgoCD sync come after.
 
+Every service serves `/healthz` (am I beyond saving?) and `/readyz` (should traffic reach me?). Compose
+ignores them; on k3s they are wired to liveness and readiness probes, and
+[`k8s/README.md`](k8s/README.md#probes) covers what each one deliberately does *not* check.
+
 ## Running the stack
 
 ```bash
@@ -113,7 +117,7 @@ alerts fire on), **diffs** it against desired (every device healthy), and **acts
   socket. Docker's own `restart:` already covers a *crashed* container, so this only earns its keep on
   the case Docker misses — a container alive but not serving. It's the compose-era stand-in for a
   Kubernetes **liveness probe**, and it's env-gated (`FLEET_HEAL_SERVICES`) because the Docker socket is
-  root-on-host.
+  root-on-host. On k3s that branch is off: the kubelet does it without handing anyone a root socket.
 
 **Guardrails are what make it heal instead of thrash:**
 

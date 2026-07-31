@@ -43,6 +43,17 @@ spec:
           ports:
             - name: http
               containerPort: 9096
+          # Both endpoints run a SELECT against SQLite: an unwritable volume or a held write lock is
+          # the failure that matters here, and a socket-only check would sail straight past it.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
           volumeMounts:
             - name: data
               mountPath: /data

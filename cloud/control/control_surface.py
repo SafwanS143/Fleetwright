@@ -355,7 +355,9 @@ def make_handler(client, fleet: Fleet):
                 self._reply(200, json.dumps(fleet.snapshot()), "application/json")
             elif path == "/metrics":
                 self._reply(200, generate_latest(), CONTENT_TYPE_LATEST)
-            elif path == "/healthz":
+            elif path in ("/healthz", "/readyz"):
+                # Both are process-level on purpose: the cockpit is built to degrade when a source is
+                # down, so a broker or Prometheus outage must not take the operator's page offline.
                 self._reply(200, "ok")
             else:
                 self._reply(404, "not found")
@@ -411,7 +413,8 @@ def main():
                          client_id="fleet-control", userdata=fleet)
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect(BROKER_HOST, BROKER_PORT, keepalive=30)
+    # Async so the cockpit still serves (degraded) when the broker isn't up yet, instead of crash-looping.
+    client.connect_async(BROKER_HOST, BROKER_PORT, keepalive=30)
     client.loop_start()
 
     threading.Thread(target=poller, args=(fleet,), daemon=True).start()

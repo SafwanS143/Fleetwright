@@ -304,6 +304,19 @@ def recent_incidents(limit=100):
     return incidents
 
 
+def db_healthy():
+    """Probe the writer, not just the socket: a held LOCK or an unwritable volume is the real hang."""
+    if not LOCK.acquire(timeout=2):
+        return False, "db lock held"
+    try:
+        db.execute("SELECT 1")
+        return True, "ok"
+    except sqlite3.Error as exc:
+        return False, f"db error: {exc}"
+    finally:
+        LOCK.release()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _reply(self, code, body, content_type="text/plain; charset=utf-8"):
         self.send_response(code)
@@ -336,6 +349,9 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 body = json.dumps(recent_incidents(), indent=2)
             self._reply(200, body, "application/json")
+        elif self.path in ("/healthz", "/readyz"):
+            ok, detail = db_healthy()
+            self._reply(200 if ok else 503, detail)
         else:
             self._reply(200, "incident-store ok")
 

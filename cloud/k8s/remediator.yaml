@@ -44,6 +44,17 @@ spec:
           ports:
             - name: http
               containerPort: 9098
+          # The controller's HTTP thread answers even when the reconcile loop is wedged, so /healthz
+          # reads the loop's heartbeat instead. A cycle that merely failed still counts as a beat.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
           resources:
             requests: { cpu: 25m, memory: 64Mi }
             limits: { memory: 256Mi }

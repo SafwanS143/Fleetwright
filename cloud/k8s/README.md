@@ -73,10 +73,81 @@ kubectl -n fleet create secret generic alertmanager-slack \
 | `ports:` | `Service` (LoadBalancer / ClusterIP) | Only what an operator or the Pi actually needs is published; the bridge, anomaly detector, and alert sink are cluster-internal. |
 | `depends_on` | nothing | No start-order primitive exists. Every service already retries its dependency, and CrashLoopBackOff converges on its own. |
 | `/var/run/docker.sock` on the remediator | removed | Restarting a hung container is the kubelet's job now. The loop keeps device remediation and drops root. |
+| `restart: unless-stopped` alone | liveness + readiness probes | Restart policies only see a process that exited. Probes also catch one that is alive and not serving, and readiness gates traffic without killing anything. |
 
 Stateful services (`mosquitto`, `prometheus`, `alertmanager`, `incidents`, `grafana`) use
 `strategy: Recreate`: their claims are `ReadWriteOnce`, so a rolling surge pod would block forever
 waiting for the outgoing pod to release the volume.
 
-Liveness and readiness probes are added next — the remediator's service-healing branch is switched
-off here precisely because that responsibility moves to the kubelet.
+## Probes
+
+Two different questions, two different consequences:
+
+- **Readiness — "should traffic reach me?"** Failing removes the pod from its Service's endpoints. It
+  is a routing decision, and it is reversible.
+- **Liveness — "am I beyond saving?"** Failing kills the container and the kubelet restarts it. It is
+  the compose-era remediator's service-healing branch, moved to the platform — which is why
+  `FLEET_HEAL_SERVICES` is off in [`remediator.yaml`](remediator.yaml).
+
+| Workload | Readiness | Liveness | Startup |
+| --- | --- | --- | --- |
+| bridge, anomaly | `/readyz` — broker subscription established | `/healthz` — MQTT network loop still running | anomaly only (~6s of numpy/sklearn import) |
+| incidents | `/readyz` — `SELECT 1` on SQLite | `/healthz` — same query | — |
+| remediator | `/readyz` — first reconcile finished | `/healthz` — reconcile loop beat within `FLEET_LOOP_STALL` | — |
+| control, alert-sink, simulator | HTTP serving | HTTP serving | — |
+| prometheus | `/-/ready` (false during WAL replay) | `/-/healthy` | yes — replay can take minutes |
+| grafana | `/api/health` (checks its DB) | `/api/health` | yes — migrations + provisioning |
+| mosquitto | TCP accept on 1883 | TCP accept on 1883 | — |
+
+Two rules shaped every row:
+
+**Liveness never checks a dependency.** A restart cannot fix someone else's outage, and a probe that
+restarts on one turns a single failure into a crash-looping cascade. So `/healthz` on the bridge asks
+only whether *this process's* MQTT loop is running; a broker that is down leaves it a healthy 200. The
+same reasoning applies to the remediator: a cycle that failed because Prometheus was unreachable still
+counts as a heartbeat. Getting there also meant switching every MQTT client to `connect_async` — the
+synchronous `connect()` raises when the broker isn't up yet, which is a crash loop wearing a costume.
+
+**Readiness must not delete the signal it reports.** The obvious design ties the bridge's readiness to
+its broker connection. It's wrong: an unready bridge leaves the Service, Prometheus stops scraping
+`fleet_last_message_timestamp_seconds`, the freshness SLI goes stale, and `FleetDeviceStale` quietly
+stops evaluating — the monitoring goes dark exactly when the fleet does. So readiness here is a
+*warm-up* gate only: unready until the first subscription, ready across every flap after it. The broker
+state is reported the honest way instead, as `fleet_broker_connected` with a `FleetBrokerUnreachable`
+alert on it.
+
+### Demo
+
+A hung container — alive, not serving, the case a restart policy alone never catches. `SIGSTOP` has to
+come from outside the pod's PID namespace, because the kernel refuses to stop a namespace's PID 1 from
+inside it:
+
+```bash
+NODE=k3d-fleetwright-server-0
+CID=$(docker exec $NODE crictl ps --name bridge -q)
+PID=$(docker exec $NODE crictl inspect --output go-template --template '{{.info.pid}}' $CID)
+docker exec $NODE kill -STOP $PID          # frozen: socket still listens, nothing answers
+kubectl -n fleet get pod -l app=bridge -w
+```
+
+Readiness fails first and the pod leaves the Service within ~10s; liveness takes ~30s (3 × 10s) before
+it kills the container and the kubelet restarts it — fast and reversible versus slow and destructive,
+exactly the split the two probes are for. On a cluster with no node shell,
+`kubectl debug node/<node>` gives the same reach via a `hostPID` pod.
+
+An unready pod pulled from service — start the bridge with no broker to talk to:
+
+```bash
+kubectl -n fleet scale deploy/mosquitto --replicas=0
+kubectl -n fleet rollout restart deploy/bridge
+kubectl -n fleet get pod -l app=bridge     # Running, READY 0/1 — 0 restarts, it isn't broken
+kubectl -n fleet get endpointslice -l kubernetes.io/service-name=bridge \
+  -o jsonpath='{.items[0].endpoints[*].conditions.ready}'    # false
+kubectl -n fleet scale deploy/mosquitto --replicas=1         # ready within seconds
+```
+
+The rolling update also refuses to finish while the new pod is unready, so the old one keeps serving —
+a bad config that can't reach the broker never takes the ingest path down with it.
+
+Scaling the broker to zero *without* restarting the bridge shows the deliberate asymmetry: the pod
+stays `1/1 READY`, keeps exporting, `fleet_broker_connected` drops to 0, and the alert fires.

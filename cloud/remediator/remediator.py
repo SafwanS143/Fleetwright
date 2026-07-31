@@ -67,6 +67,10 @@ RECONCILE_LOOPS = Counter(
     "Reconcile cycles completed — the healer's own heartbeat.",
 )
 
+# A controller whose HTTP thread answers while its loop is wedged is the failure a naive probe misses,
+# so liveness reads the loop's heartbeat. Generous: a slow cycle must not look like a hang.
+LOOP_STALL = float(os.environ.get("FLEET_LOOP_STALL", str(max(90.0, RECONCILE_INTERVAL * 4))))
+
 
 def log(msg):
     now = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -104,6 +108,9 @@ class Controller:
     def __init__(self, mqtt_client):
         self.mqtt = mqtt_client
         self.targets: dict[tuple, Target] = {}
+        # Seeded at startup so the first cycle gets a full stall window before liveness judges it.
+        self.last_loop = time.time()
+        self.loops = 0
         self.docker = None
         if HEAL_SERVICES:
             self._init_docker()
@@ -165,6 +172,8 @@ class Controller:
             return
         finally:
             RECONCILE_LOOPS.inc()
+            self.last_loop = time.time()
+            self.loops += 1
 
         bad = {f.key: f for f in findings}
 
@@ -231,6 +240,14 @@ class Controller:
             log(f"{f.name}/{f.reason}: action failed: {exc}")
         return False
 
+    def live(self):
+        # A cycle that merely failed still stamps the heartbeat — an unreachable Prometheus is a
+        # dependency outage, and restarting this pod would not fix it.
+        return time.time() - self.last_loop < LOOP_STALL
+
+    def ready(self):
+        return self.loops > 0
+
     def state(self):
         return [
             {
@@ -255,6 +272,12 @@ def make_handler(controller):
                 self._reply(200, generate_latest(), CONTENT_TYPE_LATEST)
             elif self.path.startswith("/state"):
                 self._reply(200, json.dumps(controller.state(), indent=2), "application/json")
+            elif self.path == "/healthz":
+                ok = controller.live()
+                self._reply(200 if ok else 503, "ok" if ok else "reconcile loop stalled")
+            elif self.path == "/readyz":
+                ok = controller.ready()
+                self._reply(200 if ok else 503, "ready" if ok else "first reconcile not finished")
             else:
                 self._reply(200, "remediator ok")
 
@@ -266,7 +289,8 @@ def make_handler(controller):
 
 def main():
     client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="fleet-remediator")
-    client.connect(BROKER_HOST, BROKER_PORT, keepalive=30)
+    # Async so a broker that isn't up yet is a retry, not a crash loop; loop_start keeps retrying.
+    client.connect_async(BROKER_HOST, BROKER_PORT, keepalive=30)
     client.loop_start()
 
     controller = Controller(client)

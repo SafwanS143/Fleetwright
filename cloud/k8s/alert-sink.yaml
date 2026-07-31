@@ -19,6 +19,15 @@ spec:
           ports:
             - name: http
               containerPort: 9095
+          # A stateless receiver: serving HTTP is the whole job, so one check covers both questions.
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 15
+            failureThreshold: 4
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 128Mi }

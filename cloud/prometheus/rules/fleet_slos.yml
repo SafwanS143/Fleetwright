@@ -86,6 +86,20 @@ groups:
           description: "Prometheus cannot scrape the bridge; freshness / availability / error SLIs are all blind."
           runbook_url: "docs/runbooks/ingest-pipeline-down.md"
 
+      # Operational alert: the subscribers deliberately stay ready through a broker outage so their
+      # metrics keep flowing, which means this — not a readiness probe — is what makes the outage visible.
+      - alert: FleetBrokerUnreachable
+        expr: fleet_broker_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+          sli: pipeline
+          team: platform
+        annotations:
+          summary: "{{ $labels.job }} has lost its MQTT broker connection"
+          description: "No broker session for over a minute; telemetry stops reaching the cloud even though the service itself is healthy."
+          runbook_url: "docs/runbooks/ingest-pipeline-down.md"
+
   - name: fleet_remediation_alerts
     rules:
       # Self-healing gave up: it tried its capped attempts and the target is still bad. This is the only

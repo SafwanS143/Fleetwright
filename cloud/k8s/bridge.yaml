@@ -28,6 +28,18 @@ spec:
           ports:
             - name: metrics
               containerPort: 8000
+          # Warm-up gate: no broker subscription yet means nothing worth scraping, so stay out of the
+          # Service. It does not flip back on a later broker outage — see k8s/README.md.
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 5
+            failureThreshold: 2
+          # Process-local only. A wedged or dead MQTT loop is the one failure a restart actually fixes.
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { memory: 256Mi }

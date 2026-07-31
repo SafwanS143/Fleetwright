@@ -37,6 +37,22 @@ spec:
           ports:
             - name: http
               containerPort: 9090
+          # WAL replay on a large TSDB can take minutes; the startup probe buys that time so liveness
+          # can stay tight afterwards instead of a restart loop that never finishes replaying.
+          startupProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 60
+          # Upstream splits these for us: /-/ready is false during replay, /-/healthy only proves alive.
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
           volumeMounts:
             - name: config
               mountPath: /etc/prometheus/prometheus.yml

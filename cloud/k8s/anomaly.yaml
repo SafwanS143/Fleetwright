@@ -33,6 +33,23 @@ spec:
           ports:
             - name: metrics
               containerPort: 8001
+          # Measured ~6s of numpy/scikit-learn import before this one binds its port; the startup
+          # probe absorbs that so liveness can stay tight instead of guessing an initialDelay.
+          startupProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 2
+            failureThreshold: 15
+          # Same split as the bridge: readiness is the subscription warm-up, liveness is process-local.
+          # Model warm-up is deliberately not a gate — fleet_anomaly_model_ready already reports it.
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           resources:
             # numpy/scikit-learn baselines make this the heaviest of the Python services.
             requests: { cpu: 100m, memory: 192Mi }

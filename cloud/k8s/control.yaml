@@ -36,6 +36,17 @@ spec:
           ports:
             - name: http
               containerPort: 9099
+          # Process-level on both, by design: the cockpit degrades panel by panel when a source is
+          # down, and an operator locked out mid-incident is worse than a page with one dead panel.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
           resources:
             requests: { cpu: 25m, memory: 64Mi }
             limits: { memory: 256Mi }

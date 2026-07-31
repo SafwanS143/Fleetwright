@@ -32,6 +32,16 @@ spec:
           ports:
             - name: mqtt
               containerPort: 1883
+          # No HTTP surface to probe: accepting a TCP connection on the listener is exactly what every
+          # publisher and subscriber needs from the broker, so that is the honest check.
+          readinessProbe:
+            tcpSocket: { port: mqtt }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            tcpSocket: { port: mqtt }
+            periodSeconds: 15
+            failureThreshold: 4
           volumeMounts:
             - name: config
               mountPath: /mosquitto/config/mosquitto.conf

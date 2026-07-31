@@ -241,7 +241,8 @@ def main():
     client.user_data_set(devices)
     client.on_connect = on_connect
     client.on_message = on_command
-    client.connect(args.host, args.port, keepalive=30)
+    # Async so a broker that isn't up yet is a retry, not a crash loop; loop_start keeps retrying.
+    client.connect_async(args.host, args.port, keepalive=30)
     client.loop_start()
 
     period = 1.0 / args.rate
